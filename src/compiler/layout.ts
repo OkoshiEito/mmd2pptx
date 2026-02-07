@@ -46,11 +46,11 @@ function resolveReadableLayoutConfig(ir: DiagramIr): LayoutConfig {
   const complexity = clamp(sizeLoad * 0.45 + edgeLoad * 0.35 + textLoad * 0.2, 0, 1);
 
   return {
-    nodesep: Math.round(clamp(base.nodesep * (1 + complexity * 0.26) + complexity * 6, base.nodesep * 0.92, 320)),
-    ranksep: Math.round(clamp(base.ranksep * (1 + complexity * 0.34) + complexity * 8, base.ranksep * 0.9, 420)),
-    edgesep: Math.round(clamp(base.edgesep * (1 + complexity * 0.24) + complexity * 4, base.edgesep * 0.9, 200)),
-    marginx: Math.round(clamp(base.marginx * (1 + complexity * 0.34) + complexity * 7, base.marginx * 0.9, 180)),
-    marginy: Math.round(clamp(base.marginy * (1 + complexity * 0.34) + complexity * 7, base.marginy * 0.9, 180)),
+    nodesep: Math.round(clamp(base.nodesep * (1 + complexity * 0.34) + complexity * 10, base.nodesep * 0.96, 340)),
+    ranksep: Math.round(clamp(base.ranksep * (1 + complexity * 0.42) + complexity * 14, base.ranksep * 0.96, 460)),
+    edgesep: Math.round(clamp(base.edgesep * (1 + complexity * 0.28) + complexity * 6, base.edgesep * 0.95, 220)),
+    marginx: Math.round(clamp(base.marginx * (1 + complexity * 0.4) + complexity * 10, base.marginx * 0.95, 200)),
+    marginy: Math.round(clamp(base.marginy * (1 + complexity * 0.4) + complexity * 10, base.marginy * 0.95, 200)),
   };
 }
 
@@ -1051,6 +1051,53 @@ function optimizeNodePlacement(
   return moved;
 }
 
+function segmentIntersectsExpandedRect(
+  from: Point,
+  to: Point,
+  node: DiagramIr["nodes"][number],
+  padding: number,
+): boolean {
+  const rx0 = node.x - padding;
+  const ry0 = node.y - padding;
+  const rx1 = node.x + node.width + padding;
+  const ry1 = node.y + node.height + padding;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const p = [-dx, dx, -dy, dy];
+  const q = [from.x - rx0, rx1 - from.x, from.y - ry0, ry1 - from.y];
+
+  let u1 = 0;
+  let u2 = 1;
+  const eps = 1e-9;
+  for (let i = 0; i < 4; i += 1) {
+    const pi = p[i];
+    const qi = q[i];
+    if (Math.abs(pi) <= eps) {
+      if (qi < 0) {
+        return false;
+      }
+      continue;
+    }
+    const t = qi / pi;
+    if (pi < 0) {
+      if (t > u2) {
+        return false;
+      }
+      if (t > u1) {
+        u1 = t;
+      }
+    } else {
+      if (t < u1) {
+        return false;
+      }
+      if (t < u2) {
+        u2 = t;
+      }
+    }
+  }
+  return u1 <= u2;
+}
+
 function chooseEdgeSides(
   fromNode: DiagramIr["nodes"][number],
   toNode: DiagramIr["nodes"][number],
@@ -1059,6 +1106,7 @@ function chooseEdgeSides(
   fixedEndSide: EdgeSide | undefined,
   sideLoad: Map<string, number>,
   pairLoad: Map<string, number>,
+  allNodes: DiagramIr["nodes"],
 ): { startSide: EdgeSide; endSide: EdgeSide } {
   const startCandidates = fixedStartSide ? [fixedStartSide] : EDGE_SIDES;
   const endCandidates = fixedEndSide ? [fixedEndSide] : EDGE_SIDES;
@@ -1091,13 +1139,26 @@ function chooseEdgeSides(
         score += 5;
       }
 
-      score += (sideLoad.get(`${fromNode.id}:${startSide}`) ?? 0) * 18;
-      score += (sideLoad.get(`${toNode.id}:${endSide}`) ?? 0) * 18;
+      score += (sideLoad.get(`${fromNode.id}:${startSide}`) ?? 0) * 12;
+      score += (sideLoad.get(`${toNode.id}:${endSide}`) ?? 0) * 12;
 
       const pairKey = `${fromNode.id}->${toNode.id}:${startSide}${endSide}`;
       const reverseKey = `${toNode.id}->${fromNode.id}:${endSide}${startSide}`;
-      score += (pairLoad.get(pairKey) ?? 0) * 86;
-      score += (pairLoad.get(reverseKey) ?? 0) * 134;
+      score += (pairLoad.get(pairKey) ?? 0) * 74;
+      score += (pairLoad.get(reverseKey) ?? 0) * 106;
+
+      let obstacleHits = 0;
+      for (const node of allNodes) {
+        if (node.isJunction || node.id === fromNode.id || node.id === toNode.id) {
+          continue;
+        }
+        if (segmentIntersectsExpandedRect(p0, p1, node, 8)) {
+          obstacleHits += 1;
+        }
+      }
+      if (obstacleHits > 0) {
+        score += obstacleHits * (180 + Math.min(120, dist * 0.12));
+      }
 
       if (score < bestScore) {
         bestScore = score;
@@ -1157,6 +1218,7 @@ function inferEdgeSideHints(ir: DiagramIr, rankdir: Rankdir): void {
       edge.style.endSide,
       sideLoad,
       pairLoad,
+      ir.nodes,
     );
     edge.style.startSide = sides.startSide;
     edge.style.endSide = sides.endSide;
@@ -1721,7 +1783,8 @@ function compactLayoutDensity(ir: DiagramIr, rankdir: Rankdir, layoutConfig: Lay
   let moved = false;
   const nodeLoad = clamp((nodes.length - 10) / 42, 0, 1);
   const edgeLoad = clamp((ir.edges.length - Math.max(6, nodes.length)) / Math.max(14, nodes.length * 1.7), 0, 1);
-  const targetOccupancy = 0.112 + (nodeLoad * 0.45 + edgeLoad * 0.55) * 0.03;
+  // Keep some slack so dense diagrams can breathe and labels have room.
+  const targetOccupancy = 0.082 + (nodeLoad * 0.4 + edgeLoad * 0.6) * 0.024;
   for (let pass = 0; pass < passes; pass += 1) {
     recomputeSubgraphBounds(ir);
     recomputeBounds(ir);
@@ -1735,8 +1798,8 @@ function compactLayoutDensity(ir: DiagramIr, rankdir: Rankdir, layoutConfig: Lay
 
     const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
     const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
-    const squeezeX = rankdir === "TB" || rankdir === "BT" ? 0.936 : 0.952;
-    const squeezeY = rankdir === "TB" || rankdir === "BT" ? 0.952 : 0.936;
+    const squeezeX = rankdir === "TB" || rankdir === "BT" ? 0.958 : 0.968;
+    const squeezeY = rankdir === "TB" || rankdir === "BT" ? 0.968 : 0.958;
 
     let shifted = false;
     for (const node of nodes) {
@@ -2196,8 +2259,7 @@ function fitLayoutToTargetAspect(
     }
 
     const beforeState = captureLayoutState(ir);
-    const beforeQuality = scoreLayoutQuality(ir, rankdir, layoutConfig);
-    const beforeObjective = beforeQuality + beforeDeviation * 15000;
+    const beforeObjective = layoutSelectionObjective(ir, rankdir, layoutConfig) + beforeDeviation * 15000;
     const baseCompress = clamp(beforeDeviation * 0.55, 0.04, 0.24);
 
     let accepted = false;
@@ -2249,8 +2311,7 @@ function fitLayoutToTargetAspect(
       recomputeBounds(ir);
 
       const afterDeviation = Math.abs(Math.log(Math.max(1e-6, diagramAspect(ir) / target)));
-      const afterQuality = scoreLayoutQuality(ir, rankdir, layoutConfig);
-      const afterObjective = afterQuality + afterDeviation * 15000;
+      const afterObjective = layoutSelectionObjective(ir, rankdir, layoutConfig) + afterDeviation * 15000;
 
       if (afterObjective + 1e-6 < beforeObjective || afterDeviation + 1e-6 < beforeDeviation * 0.92) {
         accepted = true;
@@ -2347,8 +2408,8 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir, layoutConfig: Layou
   const nodeArea = nonJunctionNodes.reduce((sum, node) => sum + node.width * node.height, 0);
   const boundsArea = Math.max(1, ir.bounds.width * ir.bounds.height);
   const occupancyRatio = nodeArea / boundsArea;
-  const overcrowdedPenalty = Math.max(0, occupancyRatio - 0.2) * 9000;
-  const sparsePenalty = Math.max(0, 0.12 - occupancyRatio) * 12000;
+  const overcrowdedPenalty = Math.max(0, occupancyRatio - 0.165) * 12000;
+  const sparsePenalty = Math.max(0, 0.08 - occupancyRatio) * 7800;
   const quadrantImbalancePenalty = quadrantImbalanceOfNodeArea(ir) * 2200;
 
   return (
@@ -2363,6 +2424,22 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir, layoutConfig: Layou
     sparsePenalty +
     quadrantImbalancePenalty
   );
+}
+
+function layoutSelectionObjective(ir: DiagramIr, rankdir: Rankdir, layoutConfig: LayoutConfig): number {
+  const quality = scoreLayoutQuality(ir, rankdir, layoutConfig);
+  const read = evaluateReadability(ir);
+  const metrics = read.metrics;
+
+  const hardConflicts =
+    metrics.edgeCrossings * 2100 +
+    metrics.edgeThroughNodeCount * 1900 +
+    metrics.edgeLabelNodeOverlapCount * 1350 +
+    metrics.edgeLabelLabelOverlapCount * 1500;
+  const densityPenalty =
+    Math.max(0, metrics.occupancyRatio - 0.165) * 18000 + Math.max(0, 0.075 - metrics.occupancyRatio) * 8000;
+
+  return quality * 0.38 + read.penalty + hardConflicts + densityPenalty;
 }
 
 function hashString32(text: string): number {
@@ -2407,6 +2484,58 @@ function applyDeterministicJitter(
   }
 }
 
+function applyDeterministicSpread(
+  ir: DiagramIr,
+  pinnedNodeIds: Set<string>,
+  rankdir: Rankdir,
+  variant: number,
+): void {
+  const movable = ir.nodes.filter((node) => !node.isJunction && !pinnedNodeIds.has(node.id));
+  if (movable.length === 0) {
+    return;
+  }
+
+  recomputeSubgraphBounds(ir);
+  recomputeBounds(ir);
+
+  const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
+  const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
+  const pattern = (variant - 1) % 5;
+  let scaleX = 1.0;
+  let scaleY = 1.0;
+  if (pattern === 0) {
+    scaleX = 1.08;
+    scaleY = 1.04;
+  } else if (pattern === 1) {
+    scaleX = 1.14;
+    scaleY = 1.06;
+  } else if (pattern === 2) {
+    scaleX = 1.04;
+    scaleY = 1.12;
+  } else if (pattern === 3) {
+    scaleX = 1.1;
+    scaleY = 1.1;
+  } else {
+    scaleX = 1.06;
+    scaleY = 1.15;
+  }
+
+  if (rankdir === "LR" || rankdir === "RL") {
+    const tmp = scaleX;
+    scaleX = scaleY;
+    scaleY = tmp;
+  }
+
+  for (const node of movable) {
+    const centerX = node.x + node.width / 2;
+    const centerY = node.y + node.height / 2;
+    const nextCenterX = cx + (centerX - cx) * scaleX;
+    const nextCenterY = cy + (centerY - cy) * scaleY;
+    node.x = nextCenterX - node.width / 2;
+    node.y = nextCenterY - node.height / 2;
+  }
+}
+
 function optimizeLayoutWithRestarts(
   ir: DiagramIr,
   rankdir: Rankdir,
@@ -2414,7 +2543,7 @@ function optimizeLayoutWithRestarts(
   layoutConfig: LayoutConfig,
 ): void {
   const baseState = captureLayoutState(ir);
-  const candidateCount = clamp(Math.round(3 + Math.sqrt(Math.max(1, ir.nodes.length)) * 0.8), 3, 10);
+  const candidateCount = clamp(Math.round(4 + Math.sqrt(Math.max(1, ir.nodes.length)) * 1.05), 4, 14);
 
   let bestState = captureLayoutState(ir);
   let bestScore = Number.POSITIVE_INFINITY;
@@ -2424,6 +2553,7 @@ function optimizeLayoutWithRestarts(
 
     if (candidate > 0) {
       applyDeterministicJitter(ir, pinnedNodeIds, rankdir, candidate, layoutConfig);
+      applyDeterministicSpread(ir, pinnedNodeIds, rankdir, candidate);
     }
 
     optimizeNodePlacement(ir, rankdir, pinnedNodeIds, layoutConfig);
@@ -2459,7 +2589,7 @@ function optimizeLayoutWithRestarts(
       recomputeBounds(ir);
     }
 
-    const score = scoreLayoutQuality(ir, rankdir, layoutConfig);
+    const score = layoutSelectionObjective(ir, rankdir, layoutConfig);
     if (score + 1e-6 < bestScore) {
       bestScore = score;
       bestState = captureLayoutState(ir);
@@ -2595,7 +2725,6 @@ function applyLayout(ir: DiagramIr, targetAspectRatio?: number): void {
   }
 
   const rankdir = toRankdir(ir.meta.direction);
-  const hasLegend = hasExplicitLegendSubgraph(ir);
   const movedByJunction = enforceJunctionSidePlacement(ir);
   optimizeLayoutWithRestarts(ir, rankdir, movedByJunction, effectiveLayout);
   const movedBySubgraphConstraint = enforceTopLevelSubgraphSeparation(ir, effectiveLayout, 10);
@@ -2611,27 +2740,25 @@ function applyLayout(ir: DiagramIr, targetAspectRatio?: number): void {
     rebuildEdgeRoutesFromSideAnchors(ir);
   }
 
-  if (!hasLegend) {
-    const movedBySkewReduction = reduceDiagonalSkew(ir, rankdir, effectiveLayout);
-    if (movedBySkewReduction) {
-      enforceSpatialConstraints(ir, effectiveLayout, 10);
-      inferEdgeSideHints(ir, rankdir);
-      rebuildEdgeRoutesFromSideAnchors(ir);
-    }
+  const movedBySkewReduction = reduceDiagonalSkew(ir, rankdir, effectiveLayout);
+  if (movedBySkewReduction) {
+    enforceSpatialConstraints(ir, effectiveLayout, 10);
+    inferEdgeSideHints(ir, rankdir);
+    rebuildEdgeRoutesFromSideAnchors(ir);
+  }
 
-    const movedByQuadrantRebalance = rebalanceQuadrantCoverage(ir, rankdir, effectiveLayout);
-    if (movedByQuadrantRebalance) {
-      enforceSpatialConstraints(ir, effectiveLayout, 10);
-      inferEdgeSideHints(ir, rankdir);
-      rebuildEdgeRoutesFromSideAnchors(ir);
-    }
+  const movedByQuadrantRebalance = rebalanceQuadrantCoverage(ir, rankdir, effectiveLayout);
+  if (movedByQuadrantRebalance) {
+    enforceSpatialConstraints(ir, effectiveLayout, 10);
+    inferEdgeSideHints(ir, rankdir);
+    rebuildEdgeRoutesFromSideAnchors(ir);
+  }
 
-    const movedByQuadrantPromotion = promoteUnderfilledQuadrant(ir, rankdir, effectiveLayout);
-    if (movedByQuadrantPromotion) {
-      enforceSpatialConstraints(ir, effectiveLayout, 10);
-      inferEdgeSideHints(ir, rankdir);
-      rebuildEdgeRoutesFromSideAnchors(ir);
-    }
+  const movedByQuadrantPromotion = promoteUnderfilledQuadrant(ir, rankdir, effectiveLayout);
+  if (movedByQuadrantPromotion) {
+    enforceSpatialConstraints(ir, effectiveLayout, 10);
+    inferEdgeSideHints(ir, rankdir);
+    rebuildEdgeRoutesFromSideAnchors(ir);
   }
 
   if (Number.isFinite(targetAspectRatio)) {
@@ -2737,10 +2864,18 @@ function tuneLayoutForAspect(ir: DiagramIr, targetAspectRatio: number): void {
 
   applyLayout(ir, target);
 
+  const aspectAwareObjective = (): number => {
+    const deviation = Math.abs(Math.log(diagramAspect(ir) / target));
+    const read = evaluateReadability(ir);
+    const densityPenalty =
+      Math.max(0, read.metrics.occupancyRatio - 0.17) * 16000 + Math.max(0, 0.072 - read.metrics.occupancyRatio) * 7000;
+    return read.penalty + deviation * 17000 + densityPenalty;
+  };
+
   let bestState = captureLayoutState(ir);
   let bestNodesep = ir.config.layout.nodesep;
   let bestRanksep = ir.config.layout.ranksep;
-  let bestScore = Math.abs(Math.log(diagramAspect(ir) / target));
+  let bestScore = aspectAwareObjective();
 
   let candidateNodesep = baseNodesep;
   let candidateRanksep = baseRanksep;
@@ -2773,7 +2908,7 @@ function tuneLayoutForAspect(ir: DiagramIr, targetAspectRatio: number): void {
     ir.config.layout.ranksep = candidateRanksep;
     applyLayout(ir, target);
 
-    const score = Math.abs(Math.log(diagramAspect(ir) / target));
+    const score = aspectAwareObjective();
     if (score < bestScore) {
       bestScore = score;
       bestState = captureLayoutState(ir);
