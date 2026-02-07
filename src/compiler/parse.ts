@@ -2,6 +2,7 @@ import type {
   ArrowType,
   DiagramAst,
   DiagramDirection,
+  EdgeSide,
   EdgeMarker,
   EdgeLineStyle,
   NodeShape,
@@ -10,8 +11,9 @@ import type {
   ParsedSubgraph,
 } from "../types.js";
 
-const HEADER_RE = /^(flowchart|graph|stateDiagram(?:-v2)?|classDiagram(?:-v2)?)\b(?:\s+([A-Za-z]{2}))?/i;
+const HEADER_RE = /^(flowchart|graph|stateDiagram(?:-v2)?|classDiagram(?:-v2)?|architecture-beta)\b(?:\s+([A-Za-z]{2}))?/i;
 const CLASS_HEADER_RE = /^classDiagram(?:-v2)?\b/i;
+const ARCH_HEADER_RE = /^architecture-beta\b/i;
 const EDGE_TOKEN_RE = /(?:([A-Za-z0-9_:-]+)@)?([ox]?<?[-=.~]{2,}>?[ox]?)/giu;
 
 interface NodeExpr {
@@ -1230,6 +1232,348 @@ function classNodeLabel(node: ClassNodeBuffer): string {
   return `${header}\n${node.members.join("\n")}`;
 }
 
+function serviceShapeFromArchitectureIcon(iconRaw?: string): NodeShape {
+  const raw = (iconRaw ?? "").trim().toLowerCase();
+  if (!raw) {
+    return "roundRect";
+  }
+
+  const icon = raw.includes(":") ? raw.slice(raw.lastIndexOf(":") + 1) : raw;
+  if (/(^|[-_])(database|postgres|mysql|sql|aurora|rds)([-_]|$)/u.test(icon)) {
+    return "cylinder";
+  }
+  if (/(^|[-_])(disk|storage|bucket|s3|glacier)([-_]|$)/u.test(icon)) {
+    return "hCylinder";
+  }
+  if (/(^|[-_])(cloud|internet)([-_]|$)/u.test(icon)) {
+    return "cloud";
+  }
+  if (/(^|[-_])(server|ec2)([-_]|$)/u.test(icon)) {
+    return "subroutine";
+  }
+  return "roundRect";
+}
+
+type ArchitectureDeclaration =
+  | { kind: "group"; id: string; title: string; parentId?: string }
+  | { kind: "service"; id: string; label: string; shape: NodeShape; parentId?: string }
+  | { kind: "junction"; id: string; label: string; parentId?: string };
+
+function parseArchitectureDeclaration(raw: string): ArchitectureDeclaration | null {
+  const groupMatch = raw.match(
+    /^group\s+([A-Za-z0-9_:.\/-]+)(?:\(([^)]*)\))?(?:\[(.*?)\])?(?:\s+in\s+([A-Za-z0-9_:.\/-]+))?\s*$/iu,
+  );
+  if (groupMatch) {
+    const id = groupMatch[1].trim();
+    const title = cleanLabel(groupMatch[3] ?? id);
+    const parentId = groupMatch[4]?.trim();
+    return {
+      kind: "group",
+      id,
+      title,
+      parentId: parentId || undefined,
+    };
+  }
+
+  const serviceMatch = raw.match(
+    /^service\s+([A-Za-z0-9_:.\/-]+)(?:\(([^)]*)\))?(?:\[(.*?)\])?(?:\s+in\s+([A-Za-z0-9_:.\/-]+))?\s*$/iu,
+  );
+  if (serviceMatch) {
+    const id = serviceMatch[1].trim();
+    const icon = serviceMatch[2];
+    const label = cleanLabel(serviceMatch[3] ?? id);
+    const parentId = serviceMatch[4]?.trim();
+    return {
+      kind: "service",
+      id,
+      label,
+      shape: serviceShapeFromArchitectureIcon(icon),
+      parentId: parentId || undefined,
+    };
+  }
+
+  const junctionMatch = raw.match(/^junction\s+([A-Za-z0-9_:.\/-]+)(?:\s+in\s+([A-Za-z0-9_:.\/-]+))?\s*$/iu);
+  if (junctionMatch) {
+    const id = junctionMatch[1].trim();
+    const parentId = junctionMatch[2]?.trim();
+    return {
+      kind: "junction",
+      id,
+      label: id,
+      parentId: parentId || undefined,
+    };
+  }
+
+  return null;
+}
+
+interface ArchitectureEdgeEndpoint {
+  id: string;
+  side: EdgeSide;
+  viaGroup: boolean;
+}
+
+function parseArchitectureLeftEndpoint(raw: string): ArchitectureEdgeEndpoint | null {
+  const match = raw.trim().match(/^([A-Za-z0-9_:.\/-]+)(\{group\})?:([TBLR])$/iu);
+  if (!match) {
+    return null;
+  }
+  return {
+    id: match[1],
+    side: match[3].toUpperCase() as EdgeSide,
+    viaGroup: Boolean(match[2]),
+  };
+}
+
+function parseArchitectureRightEndpoint(raw: string): ArchitectureEdgeEndpoint | null {
+  const match = raw.trim().match(/^([TBLR]):([A-Za-z0-9_:.\/-]+)(\{group\})?$/iu);
+  if (!match) {
+    return null;
+  }
+  return {
+    id: match[2],
+    side: match[1].toUpperCase() as EdgeSide,
+    viaGroup: Boolean(match[3]),
+  };
+}
+
+function parseArchitectureEdgeStatement(
+  raw: string,
+  lineNumber: number,
+): { nodes: ParsedNode[]; edge: ParsedEdge } | null {
+  const match = raw.match(/^(.+?)\s*(<)?--(>)?\s*(.+)$/u);
+  if (!match) {
+    return null;
+  }
+
+  const left = parseArchitectureLeftEndpoint(match[1]);
+  const right = parseArchitectureRightEndpoint(match[4]);
+  if (!left || !right) {
+    return null;
+  }
+
+  const hasStart = Boolean(match[2]);
+  const hasEnd = Boolean(match[3]);
+  const arrow: ArrowType = hasStart && hasEnd ? "both" : hasStart ? "start" : hasEnd ? "end" : "none";
+
+  return {
+    nodes: [
+      {
+        id: left.id,
+        label: left.id,
+        line: lineNumber,
+        raw: raw,
+      },
+      {
+        id: right.id,
+        label: right.id,
+        line: lineNumber,
+        raw: raw,
+      },
+    ],
+    edge: {
+      from: left.id,
+      to: right.id,
+      startSide: left.side,
+      endSide: right.side,
+      startViaGroup: left.viaGroup,
+      endViaGroup: right.viaGroup,
+      style: "solid",
+      arrow,
+      line: lineNumber,
+      raw,
+    },
+  };
+}
+
+function parseArchitectureDiagram(
+  lines: string[],
+  source: string,
+  title: string | undefined,
+  layoutHints: { nodeSpacing?: number; rankSpacing?: number },
+): DiagramAst {
+  const nodeById = new Map<string, ParsedNode>();
+  const nodeOrder: string[] = [];
+  const subgraphById = new Map<string, ParsedSubgraph>();
+  const subgraphOrder: string[] = [];
+  const edges: ParsedEdge[] = [];
+  const classDefs: Record<string, Record<string, string>> = {};
+  const classAssignments: Record<string, string[]> = {};
+  const styleOverrides: Record<string, Record<string, string>> = {};
+  let direction: DiagramDirection = "TD";
+
+  const registerClasses = (id: string, names?: string[]): void => {
+    if (!names || names.length === 0) {
+      return;
+    }
+    const current = classAssignments[id] ?? [];
+    classAssignments[id] = [...new Set([...current, ...names])];
+  };
+
+  const ensureNode = (node: ParsedNode): void => {
+    const existing = nodeById.get(node.id);
+    if (existing) {
+      const nextLabel = node.label?.trim();
+      if (nextLabel && (existing.label === existing.id || nextLabel.length >= (existing.label ?? "").length)) {
+        existing.label = nextLabel;
+      }
+      if (node.shape) {
+        existing.shape = node.shape;
+      }
+      if (node.subgraphId) {
+        existing.subgraphId = node.subgraphId;
+      }
+      if (node.inlineClasses && node.inlineClasses.length > 0) {
+        existing.inlineClasses = [...new Set([...(existing.inlineClasses ?? []), ...node.inlineClasses])];
+      }
+      return;
+    }
+
+    nodeById.set(node.id, { ...node });
+    nodeOrder.push(node.id);
+  };
+
+  const ensureSubgraph = (subgraph: ParsedSubgraph): void => {
+    const existing = subgraphById.get(subgraph.id);
+    if (existing) {
+      if (!existing.parentId && subgraph.parentId) {
+        existing.parentId = subgraph.parentId;
+      }
+      if (subgraph.title && subgraph.title.length >= existing.title.length) {
+        existing.title = subgraph.title;
+      }
+      return;
+    }
+
+    subgraphById.set(subgraph.id, { ...subgraph });
+    subgraphOrder.push(subgraph.id);
+  };
+
+  const logicalLines = buildLogicalLines(lines);
+  for (const logical of logicalLines) {
+    const lineNumber = logical.lineNumber;
+    const rawLine = logical.text;
+
+    const titleMatch = rawLine.match(/^\s*%%\s*title\s*:?\s*(.+?)\s*$/iu);
+    if (titleMatch && !title) {
+      title = cleanLabel(titleMatch[1]);
+    }
+
+    const initHint = parseInitDirective(rawLine);
+    if (initHint?.nodeSpacing !== undefined) {
+      layoutHints.nodeSpacing = initHint.nodeSpacing;
+    }
+    if (initHint?.rankSpacing !== undefined) {
+      layoutHints.rankSpacing = initHint.rankSpacing;
+    }
+
+    const statements = splitStatements(stripComment(rawLine));
+    for (const statement of statements) {
+      const trimmed = statement.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      if (ARCH_HEADER_RE.test(trimmed)) {
+        continue;
+      }
+
+      const dirMatch = trimmed.match(/^direction\s+([A-Za-z]{2})$/iu);
+      if (dirMatch) {
+        direction = toDirection(dirMatch[1]);
+        continue;
+      }
+
+      const declaration = parseArchitectureDeclaration(trimmed);
+      if (declaration) {
+        if (declaration.kind === "group") {
+          ensureSubgraph({
+            id: declaration.id,
+            title: declaration.title,
+            parentId: declaration.parentId,
+            line: lineNumber,
+          });
+        } else if (declaration.kind === "service") {
+          ensureNode({
+            id: declaration.id,
+            label: declaration.label,
+            shape: declaration.shape,
+            subgraphId: declaration.parentId,
+            line: lineNumber,
+            raw: trimmed,
+          });
+        } else if (declaration.kind === "junction") {
+          ensureNode({
+            id: declaration.id,
+            label: declaration.label,
+            shape: "smallCircle",
+            subgraphId: declaration.parentId,
+            line: lineNumber,
+            raw: trimmed,
+          });
+        }
+        continue;
+      }
+
+      if (/^classDef\b/i.test(trimmed)) {
+        const parsed = parseClassDefStatement(trimmed);
+        if (parsed) {
+          for (const name of parsed.names) {
+            classDefs[name] = mergeStyleMap(classDefs[name] ?? {}, parsed.styles);
+          }
+        }
+        continue;
+      }
+
+      if (/^class\b/i.test(trimmed)) {
+        const parsed = parseClassStatement(trimmed);
+        if (parsed) {
+          for (const id of parsed.ids) {
+            registerClasses(id, parsed.classes);
+          }
+        }
+        continue;
+      }
+
+      if (/^style\b/i.test(trimmed)) {
+        const parsed = parseStyleStatement(trimmed);
+        if (parsed) {
+          styleOverrides[parsed.id] = mergeStyleMap(styleOverrides[parsed.id] ?? {}, parsed.styles);
+        }
+        continue;
+      }
+
+      if (/^(linkStyle|click)\b/i.test(trimmed)) {
+        continue;
+      }
+
+      const edgeParsed = parseArchitectureEdgeStatement(trimmed, lineNumber);
+      if (edgeParsed) {
+        for (const node of edgeParsed.nodes) {
+          ensureNode(node);
+        }
+        edges.push(edgeParsed.edge);
+        continue;
+      }
+    }
+  }
+
+  return {
+    source,
+    direction,
+    title,
+    nodes: nodeOrder.map((id) => nodeById.get(id)).filter((node): node is ParsedNode => Boolean(node)),
+    edges,
+    subgraphs: subgraphOrder
+      .map((id) => subgraphById.get(id))
+      .filter((subgraph): subgraph is ParsedSubgraph => Boolean(subgraph)),
+    classDefs,
+    classAssignments,
+    styleOverrides,
+    layoutHints,
+  };
+}
+
 function parseClassDiagram(
   lines: string[],
   source: string,
@@ -1576,6 +1920,13 @@ export function parseMermaid(source: string): DiagramAst {
     const trimmed = stripComment(line).trim();
     return CLASS_HEADER_RE.test(trimmed);
   });
+  const architectureHeaderLine = lines.find((line) => {
+    const trimmed = stripComment(line).trim();
+    return ARCH_HEADER_RE.test(trimmed);
+  });
+  if (architectureHeaderLine) {
+    return parseArchitectureDiagram(lines, source, undefined, {});
+  }
   if (classHeaderLine) {
     return parseClassDiagram(lines, source, undefined, {});
   }

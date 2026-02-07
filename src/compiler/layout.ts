@@ -135,6 +135,19 @@ function applyLayout(ir: DiagramIr): void {
     }
   }
 
+  const subgraphChildren = new Map<string, string[]>();
+  for (const subgraph of ir.subgraphs) {
+    const parentId = subgraph.parentId;
+    if (!parentId || parentId === subgraph.id || !graph.hasNode(parentId) || !graph.hasNode(subgraph.id)) {
+      continue;
+    }
+
+    graph.setParent(subgraph.id, parentId);
+    const children = subgraphChildren.get(parentId) ?? [];
+    children.push(subgraph.id);
+    subgraphChildren.set(parentId, children);
+  }
+
   const subgraphAnchorNode = new Map<string, string>();
   for (const node of ir.nodes) {
     if (!node.subgraphId) {
@@ -146,6 +159,32 @@ function applyLayout(ir: DiagramIr): void {
     if (!subgraphAnchorNode.has(node.subgraphId)) {
       subgraphAnchorNode.set(node.subgraphId, node.id);
     }
+  }
+
+  const resolveSubgraphAnchor = (subgraphId: string, visited: Set<string> = new Set()): string | undefined => {
+    if (subgraphAnchorNode.has(subgraphId)) {
+      return subgraphAnchorNode.get(subgraphId);
+    }
+
+    if (visited.has(subgraphId)) {
+      return undefined;
+    }
+    visited.add(subgraphId);
+
+    const children = subgraphChildren.get(subgraphId) ?? [];
+    for (const childId of children) {
+      const anchor = resolveSubgraphAnchor(childId, visited);
+      if (anchor) {
+        subgraphAnchorNode.set(subgraphId, anchor);
+        return anchor;
+      }
+    }
+
+    return undefined;
+  };
+
+  for (const subgraph of ir.subgraphs) {
+    resolveSubgraphAnchor(subgraph.id);
   }
 
   for (const edge of ir.edges) {

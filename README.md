@@ -6,7 +6,7 @@
 
 - `Parse -> Normalize -> Measure -> Layout -> Render -> Embed` のフェーズ分割
 - 中間表現 `IR` を JSON で出力可能
-- flowchart/graph/classDiagram を自前解析
+- flowchart/graph/classDiagram/architecture-beta を自前解析
 - sequenceDiagram を python レンダラで直接変換
 - patch YAML でノード位置/サイズ・レイアウトを上書き
 - 生成した pptx に `元mmd + patch` を埋め込み
@@ -117,6 +117,7 @@ subgraphs:
 
 - `flowchart` / `graph`
 - `classDiagram`（関係マーカー・多重度ラベル・namespace・note・classDef/class/style/cssClass）
+- `architecture-beta`（group/service/junction、`id:Side -- Side:id`、`{group}` 接続）
 - `sequenceDiagram`（python renderer）
 - ノード形状: 四角/角丸/円/菱形/平行四辺形
 - エッジ: 実線/点線/太線、矢印、ラベル (`|label|`)

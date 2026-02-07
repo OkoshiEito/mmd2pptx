@@ -29,6 +29,7 @@ TOP = 0
 LEFT = 1
 BOTTOM = 2
 RIGHT = 3
+SIDE_TOKEN_MAP = {"T": TOP, "L": LEFT, "B": BOTTOM, "R": RIGHT}
 
 SHAPE_MAP = {
     "rect": MSO_SHAPE.RECTANGLE,
@@ -198,6 +199,11 @@ def side_point(node: dict[str, Any], side: int) -> tuple[float, float]:
     if side == BOTTOM:
         return x + w / 2.0, y + h
     return x + w, y + h / 2.0
+
+
+def side_from_token(value: Any) -> int | None:
+    token = str(value).strip().upper()
+    return SIDE_TOKEN_MAP.get(token)
 
 
 def side_anchor_point(node: dict[str, Any], side: int, along_offset: float = 0.0) -> tuple[float, float]:
@@ -1308,7 +1314,11 @@ def render(
         routing_mode = "straight"
 
     node_map: dict[str, dict[str, Any]] = {node["id"]: node for node in ir.get("nodes", [])}
+    subgraph_map: dict[str, dict[str, Any]] = {
+        subgraph["id"]: subgraph for subgraph in ir.get("subgraphs", []) if isinstance(subgraph.get("id"), str)
+    }
     node_shape_map: dict[str, Any] = {}
+    subgraph_shape_map: dict[str, Any] = {}
     node_box_map: dict[str, tuple[float, float, float, float]] = {}
     obstacle_boxes: list[tuple[float, float, float, float]] = []
 
@@ -1335,6 +1345,10 @@ def render(
         shape.line.width = Pt(float(style.get("strokeWidth", 1.0)))
         if style.get("dash") == "dash":
             shape.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+
+        subgraph_id = str(subgraph.get("id", "")).strip()
+        if subgraph_id:
+            subgraph_shape_map[subgraph_id] = shape
 
         title_text = str(subgraph.get("title", "")).strip()
         if title_text:
@@ -1459,12 +1473,37 @@ def render(
         dst = node_map.get(edge.get("to"))
         src_shape = node_shape_map.get(edge.get("from"))
         dst_shape = node_shape_map.get(edge.get("to"))
-        if not src or not dst or not src_shape or not dst_shape:
+        if not src or not dst:
             continue
 
+        style = edge.get("style", {})
         src_id = str(edge.get("from", ""))
         dst_id = str(edge.get("to", ""))
-        is_self_loop = src_id == dst_id
+
+        src_anchor = src
+        dst_anchor = dst
+        src_connect_shape = src_shape
+        dst_connect_shape = dst_shape
+        src_anchor_id = src_id
+        dst_anchor_id = dst_id
+
+        if bool(style.get("startViaGroup")):
+            src_group_id = str(src.get("subgraphId", "")).strip()
+            group = subgraph_map.get(src_group_id)
+            if group is not None:
+                src_anchor = group
+                src_connect_shape = subgraph_shape_map.get(src_group_id)
+                src_anchor_id = src_group_id
+
+        if bool(style.get("endViaGroup")):
+            dst_group_id = str(dst.get("subgraphId", "")).strip()
+            group = subgraph_map.get(dst_group_id)
+            if group is not None:
+                dst_anchor = group
+                dst_connect_shape = subgraph_shape_map.get(dst_group_id)
+                dst_anchor_id = dst_group_id
+
+        is_self_loop = src_id == dst_id and not bool(style.get("startViaGroup")) and not bool(style.get("endViaGroup"))
 
         if is_self_loop:
             node_box = node_box_map.get(src_id)
@@ -1474,19 +1513,39 @@ def render(
                 node_box, slide_w=slide_w, slide_h=slide_h
             )
         else:
-            src_side, dst_side = choose_connection_sides(src, dst)
+            requested_src_side = side_from_token(style.get("startSide"))
+            requested_dst_side = side_from_token(style.get("endSide"))
+
+            if requested_src_side is not None and requested_dst_side is not None:
+                src_side, dst_side = requested_src_side, requested_dst_side
+            elif requested_src_side is not None:
+                src_side = requested_src_side
+                dst_side = min(
+                    (TOP, LEFT, BOTTOM, RIGHT),
+                    key=lambda candidate: connection_cost(src_anchor, dst_anchor, src_side, candidate),
+                )
+            elif requested_dst_side is not None:
+                dst_side = requested_dst_side
+                src_side = min(
+                    (TOP, LEFT, BOTTOM, RIGHT),
+                    key=lambda candidate: connection_cost(src_anchor, dst_anchor, candidate, dst_side),
+                )
+            else:
+                src_side, dst_side = choose_connection_sides(src_anchor, dst_anchor)
             loop_points = None
             loop_label_anchor = None
 
         pending_edges.append(
             {
                 "edge": edge,
-                "src": src,
-                "dst": dst,
-                "srcShape": src_shape,
-                "dstShape": dst_shape,
+                "srcAnchor": src_anchor,
+                "dstAnchor": dst_anchor,
+                "srcShape": src_connect_shape,
+                "dstShape": dst_connect_shape,
                 "srcId": src_id,
                 "dstId": dst_id,
+                "srcAnchorId": src_anchor_id,
+                "dstAnchorId": dst_anchor_id,
                 "isSelfLoop": is_self_loop,
                 "srcSide": src_side,
                 "dstSide": dst_side,
@@ -1501,13 +1560,13 @@ def render(
     for idx, item in enumerate(pending_edges):
         if item["isSelfLoop"]:
             continue
-        side_groups.setdefault((item["srcId"], int(item["srcSide"])), []).append((idx, True))
-        side_groups.setdefault((item["dstId"], int(item["dstSide"])), []).append((idx, False))
+        side_groups.setdefault((item["srcAnchorId"], int(item["srcSide"])), []).append((idx, True))
+        side_groups.setdefault((item["dstAnchorId"], int(item["dstSide"])), []).append((idx, False))
 
     for (node_id, side), members in side_groups.items():
         if len(members) <= 1:
             continue
-        node = node_map.get(node_id)
+        node = node_map.get(node_id) or subgraph_map.get(node_id)
         if not node:
             continue
         span = float(node["width"]) if side in {TOP, BOTTOM} else float(node["height"])
@@ -1515,8 +1574,8 @@ def render(
             members,
             key=lambda item: side_sort_axis(
                 side,
-                pending_edges[item[0]]["src"],
-                pending_edges[item[0]]["dst"],
+                pending_edges[item[0]]["srcAnchor"],
+                pending_edges[item[0]]["dstAnchor"],
                 source_side=item[1],
             ),
         )
@@ -1529,8 +1588,8 @@ def render(
 
     for pending in pending_edges:
         edge = pending["edge"]
-        src = pending["src"]
-        dst = pending["dst"]
+        src = pending["srcAnchor"]
+        dst = pending["dstAnchor"]
         src_shape = pending["srcShape"]
         dst_shape = pending["dstShape"]
         is_self_loop = bool(pending["isSelfLoop"])
@@ -1595,7 +1654,7 @@ def render(
                 Inches(dy),
             )
 
-            if not use_manual_anchors:
+            if not use_manual_anchors and src_shape is not None and dst_shape is not None:
                 try:
                     connector.begin_connect(src_shape, src_side)
                     connector.end_connect(dst_shape, dst_side)

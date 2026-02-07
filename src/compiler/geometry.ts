@@ -47,19 +47,90 @@ export function recomputeSubgraphBounds(ir: DiagramIr): void {
     nodeMap.set(node.id, node);
   }
 
+  const subgraphMap = new Map(ir.subgraphs.map((subgraph) => [subgraph.id, subgraph]));
+  const childrenByParent = new Map<string, string[]>();
   for (const subgraph of ir.subgraphs) {
+    if (!subgraph.parentId) {
+      continue;
+    }
+    const children = childrenByParent.get(subgraph.parentId) ?? [];
+    children.push(subgraph.id);
+    childrenByParent.set(subgraph.parentId, children);
+  }
+
+  const computedBounds = new Map<
+    string,
+    | {
+        minX: number;
+        minY: number;
+        maxX: number;
+        maxY: number;
+      }
+    | null
+  >();
+
+  const resolveSubgraphBounds = (
+    subgraphId: string,
+    visiting: Set<string> = new Set(),
+  ):
+    | {
+        minX: number;
+        minY: number;
+        maxX: number;
+        maxY: number;
+      }
+    | null => {
+    if (computedBounds.has(subgraphId)) {
+      return computedBounds.get(subgraphId) ?? null;
+    }
+    if (visiting.has(subgraphId)) {
+      return null;
+    }
+
+    const subgraph = subgraphMap.get(subgraphId);
+    if (!subgraph) {
+      computedBounds.set(subgraphId, null);
+      return null;
+    }
+
+    visiting.add(subgraphId);
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    let hasContent = false;
+
     const members = subgraph.nodeIds
       .map((id) => nodeMap.get(id))
       .filter((node): node is IrNode => Boolean(node));
-
-    if (members.length === 0) {
-      continue;
+    for (const node of members) {
+      hasContent = true;
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x + node.width);
+      maxY = Math.max(maxY, node.y + node.height);
     }
 
-    const minX = Math.min(...members.map((node) => node.x));
-    const minY = Math.min(...members.map((node) => node.y));
-    const maxX = Math.max(...members.map((node) => node.x + node.width));
-    const maxY = Math.max(...members.map((node) => node.y + node.height));
+    const childIds = childrenByParent.get(subgraphId) ?? [];
+    for (const childId of childIds) {
+      const childBounds = resolveSubgraphBounds(childId, visiting);
+      if (!childBounds) {
+        continue;
+      }
+      hasContent = true;
+      minX = Math.min(minX, childBounds.minX);
+      minY = Math.min(minY, childBounds.minY);
+      maxX = Math.max(maxX, childBounds.maxX);
+      maxY = Math.max(maxY, childBounds.maxY);
+    }
+
+    visiting.delete(subgraphId);
+
+    if (!hasContent) {
+      computedBounds.set(subgraphId, null);
+      return null;
+    }
 
     const padding = subgraph.style.padding;
     const titleBand = titleBandHeight(subgraph.title);
@@ -67,6 +138,19 @@ export function recomputeSubgraphBounds(ir: DiagramIr): void {
     subgraph.y = minY - padding - titleBand;
     subgraph.width = maxX - minX + padding * 2;
     subgraph.height = maxY - minY + padding * 2 + titleBand;
+
+    const result = {
+      minX: subgraph.x,
+      minY: subgraph.y,
+      maxX: subgraph.x + subgraph.width,
+      maxY: subgraph.y + subgraph.height,
+    };
+    computedBounds.set(subgraphId, result);
+    return result;
+  };
+
+  for (const subgraph of ir.subgraphs) {
+    resolveSubgraphBounds(subgraph.id);
   }
 }
 

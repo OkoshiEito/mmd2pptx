@@ -1,0 +1,19 @@
+architecture-beta
+%% title: architecture syntax smoke test
+
+group app(cloud)[APP Layer]
+group data(database)[DATA Layer]
+
+service iac(server)[IaC Definitions] in app
+service gateway(server)[Data/Storage Gateway] in app
+service pg(database)[PostgreSQL] in data
+service s3(disk)[AmazonS3] in data
+service aoai(cloud)[Azure OpenAI] in data
+junction j1 in data
+
+iac:B --> T:gateway
+gateway:R --> L:pg
+gateway:B --> T:s3
+s3:R --> L:aoai
+gateway{group}:B --> T:pg
+j1:L -- R:aoai

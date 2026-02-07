@@ -51,6 +51,7 @@ export type EdgeLineStyle = "solid" | "dotted" | "thick" | "invisible";
 
 export type ArrowType = "none" | "start" | "end" | "both";
 export type EdgeMarker = "none" | "arrow" | "triangle" | "diamond" | "openDiamond" | "circle";
+export type EdgeSide = "T" | "B" | "L" | "R";
 
 export interface Point {
   x: number;
@@ -75,6 +76,10 @@ export interface ParsedEdge {
   endLabel?: string;
   startMarker?: EdgeMarker;
   endMarker?: EdgeMarker;
+  startSide?: EdgeSide;
+  endSide?: EdgeSide;
+  startViaGroup?: boolean;
+  endViaGroup?: boolean;
   style: EdgeLineStyle;
   arrow: ArrowType;
   line: number;
@@ -84,6 +89,7 @@ export interface ParsedEdge {
 export interface ParsedSubgraph {
   id: string;
   title: string;
+  parentId?: string;
   line: number;
 }
 
@@ -120,6 +126,10 @@ export interface EdgeStyle {
   arrow: ArrowType;
   startMarker: EdgeMarker;
   endMarker: EdgeMarker;
+  startSide?: EdgeSide;
+  endSide?: EdgeSide;
+  startViaGroup?: boolean;
+  endViaGroup?: boolean;
   fontSize: number;
 }
 
@@ -159,6 +169,7 @@ export interface IrEdge {
 export interface IrSubgraph {
   id: string;
   title: string;
+  parentId?: string;
   nodeIds: string[];
   x: number;
   y: number;

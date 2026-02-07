@@ -213,16 +213,29 @@ export function normalizeDiagram(ast: DiagramAst, options: NormalizeOptions = {}
         arrow: parsedEdge.arrow,
         startMarker: parsedEdge.startMarker ?? "none",
         endMarker: parsedEdge.endMarker ?? (parsedEdge.arrow === "end" || parsedEdge.arrow === "both" ? "arrow" : "none"),
+        startSide: parsedEdge.startSide,
+        endSide: parsedEdge.endSide,
+        startViaGroup: parsedEdge.startViaGroup,
+        endViaGroup: parsedEdge.endViaGroup,
       },
     };
   });
 
   ir.nodes = nodeOrder.map((id) => nodeById.get(id)).filter((n): n is IrNode => Boolean(n));
 
-  const subgraphById = new Map<string, { id: string; title: string }>();
+  const subgraphById = new Map<string, { id: string; title: string; parentId?: string }>();
   for (const subgraph of ast.subgraphs) {
-    if (!subgraphById.has(subgraph.id)) {
-      subgraphById.set(subgraph.id, { id: subgraph.id, title: subgraph.title });
+    const existing = subgraphById.get(subgraph.id);
+    if (!existing) {
+      subgraphById.set(subgraph.id, { id: subgraph.id, title: subgraph.title, parentId: subgraph.parentId });
+      continue;
+    }
+
+    if (!existing.parentId && subgraph.parentId) {
+      existing.parentId = subgraph.parentId;
+    }
+    if (subgraph.title && subgraph.title.length >= existing.title.length) {
+      existing.title = subgraph.title;
     }
   }
 
@@ -232,11 +245,28 @@ export function normalizeDiagram(ast: DiagramAst, options: NormalizeOptions = {}
     }
   }
 
+  const ensureParentSubgraphs = (): void => {
+    let changed = false;
+    for (const subgraph of [...subgraphById.values()]) {
+      if (!subgraph.parentId || subgraphById.has(subgraph.parentId)) {
+        continue;
+      }
+      subgraphById.set(subgraph.parentId, { id: subgraph.parentId, title: subgraph.parentId });
+      changed = true;
+    }
+
+    if (changed) {
+      ensureParentSubgraphs();
+    }
+  };
+  ensureParentSubgraphs();
+
   ir.subgraphs = [...subgraphById.values()].map((subgraph) => {
     const nodeIds = ir.nodes.filter((node) => node.subgraphId === subgraph.id).map((node) => node.id);
     return {
       id: subgraph.id,
       title: subgraph.title,
+      parentId: subgraph.parentId,
       nodeIds,
       x: 0,
       y: 0,
