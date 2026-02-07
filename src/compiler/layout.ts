@@ -199,6 +199,339 @@ function enforceJunctionSidePlacement(ir: DiagramIr): Set<string> {
   return moved;
 }
 
+interface EdgeGeom {
+  fromId: string;
+  toId: string;
+}
+
+interface Segment {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+function nodeCenter(node: DiagramIr["nodes"][number], override?: { x?: number; y?: number }): Point {
+  return {
+    x: (override?.x ?? node.x) + node.width / 2,
+    y: (override?.y ?? node.y) + node.height / 2,
+  };
+}
+
+function segmentForEdge(
+  edge: EdgeGeom,
+  nodeById: Map<string, DiagramIr["nodes"][number]>,
+  override?: { nodeId: string; x: number; y: number },
+): Segment | undefined {
+  const from = nodeById.get(edge.fromId);
+  const to = nodeById.get(edge.toId);
+  if (!from || !to || from.id === to.id) {
+    return undefined;
+  }
+
+  const fromCenter = nodeCenter(
+    from,
+    override && override.nodeId === from.id
+      ? {
+          x: override.x,
+          y: override.y,
+        }
+      : undefined,
+  );
+  const toCenter = nodeCenter(
+    to,
+    override && override.nodeId === to.id
+      ? {
+          x: override.x,
+          y: override.y,
+        }
+      : undefined,
+  );
+
+  return {
+    x1: fromCenter.x,
+    y1: fromCenter.y,
+    x2: toCenter.x,
+    y2: toCenter.y,
+  };
+}
+
+function orientation(ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number {
+  return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+}
+
+function segmentsCross(a: Segment, b: Segment): boolean {
+  const o1 = orientation(a.x1, a.y1, a.x2, a.y2, b.x1, b.y1);
+  const o2 = orientation(a.x1, a.y1, a.x2, a.y2, b.x2, b.y2);
+  const o3 = orientation(b.x1, b.y1, b.x2, b.y2, a.x1, a.y1);
+  const o4 = orientation(b.x1, b.y1, b.x2, b.y2, a.x2, a.y2);
+
+  const eps = 1e-6;
+  if (Math.abs(o1) < eps || Math.abs(o2) < eps || Math.abs(o3) < eps || Math.abs(o4) < eps) {
+    return false;
+  }
+
+  return (o1 > 0) !== (o2 > 0) && (o3 > 0) !== (o4 > 0);
+}
+
+function directionalPenalty(from: Point, to: Point, rankdir: "TB" | "BT" | "LR" | "RL"): number {
+  const minForward = 22;
+
+  if (rankdir === "TB") {
+    const forward = to.y - from.y;
+    return forward >= minForward ? 0 : (minForward - forward) * 8.8;
+  }
+  if (rankdir === "BT") {
+    const forward = from.y - to.y;
+    return forward >= minForward ? 0 : (minForward - forward) * 8.8;
+  }
+  if (rankdir === "LR") {
+    const forward = to.x - from.x;
+    return forward >= minForward ? 0 : (minForward - forward) * 8.8;
+  }
+
+  const forward = from.x - to.x;
+  return forward >= minForward ? 0 : (minForward - forward) * 8.8;
+}
+
+function expandedOverlapArea(
+  a: DiagramIr["nodes"][number],
+  b: DiagramIr["nodes"][number],
+  gap: number,
+  overrideA?: { x: number; y: number },
+): number {
+  const ax0 = (overrideA?.x ?? a.x) - gap;
+  const ay0 = (overrideA?.y ?? a.y) - gap;
+  const ax1 = ax0 + a.width + gap * 2;
+  const ay1 = ay0 + a.height + gap * 2;
+
+  const bx0 = b.x - gap;
+  const by0 = b.y - gap;
+  const bx1 = bx0 + b.width + gap * 2;
+  const by1 = by0 + b.height + gap * 2;
+
+  const ox = Math.max(0, Math.min(ax1, bx1) - Math.max(ax0, bx0));
+  const oy = Math.max(0, Math.min(ay1, by1) - Math.max(ay0, by0));
+  return ox * oy;
+}
+
+function resolveNodeCollisions(nodes: DiagramIr["nodes"], gap: number, passes: number): void {
+  if (nodes.length < 2) {
+    return;
+  }
+
+  for (let pass = 0; pass < passes; pass += 1) {
+    for (let i = 0; i < nodes.length; i += 1) {
+      const a = nodes[i];
+      const acx = a.x + a.width / 2;
+      const acy = a.y + a.height / 2;
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const b = nodes[j];
+        const bcx = b.x + b.width / 2;
+        const bcy = b.y + b.height / 2;
+
+        const needX = (a.width + b.width) / 2 + gap;
+        const needY = (a.height + b.height) / 2 + gap;
+        const dx = bcx - acx;
+        const dy = bcy - acy;
+        const overlapX = needX - Math.abs(dx);
+        const overlapY = needY - Math.abs(dy);
+
+        if (overlapX <= 0 || overlapY <= 0) {
+          continue;
+        }
+
+        if (overlapX < overlapY) {
+          const push = overlapX / 2 + 0.5;
+          const sign = dx >= 0 ? 1 : -1;
+          a.x -= push * sign;
+          b.x += push * sign;
+        } else {
+          const push = overlapY / 2 + 0.5;
+          const sign = dy >= 0 ? 1 : -1;
+          a.y -= push * sign;
+          b.y += push * sign;
+        }
+      }
+    }
+  }
+}
+
+function optimizeNodePlacement(ir: DiagramIr, rankdir: "TB" | "BT" | "LR" | "RL", pinnedNodeIds: Set<string>): Set<string> {
+  const moved = new Set<string>();
+  const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
+  const movableNodes = ir.nodes.filter((node) => !node.isJunction && !pinnedNodeIds.has(node.id));
+  if (movableNodes.length <= 1) {
+    return moved;
+  }
+
+  const edges: EdgeGeom[] = ir.edges
+    .map((edge) => ({ fromId: edge.from, toId: edge.to }))
+    .filter((edge) => nodeById.has(edge.fromId) && nodeById.has(edge.toId) && edge.fromId !== edge.toId);
+
+  const incidentEdges = new Map<string, EdgeGeom[]>();
+  for (const edge of edges) {
+    const fromList = incidentEdges.get(edge.fromId) ?? [];
+    fromList.push(edge);
+    incidentEdges.set(edge.fromId, fromList);
+    const toList = incidentEdges.get(edge.toId) ?? [];
+    toList.push(edge);
+    incidentEdges.set(edge.toId, toList);
+  }
+
+  const anchors = new Map(movableNodes.map((node) => [node.id, { x: node.x, y: node.y }]));
+  const optimizationOrder = [...movableNodes].sort(
+    (a, b) => (incidentEdges.get(b.id)?.length ?? 0) - (incidentEdges.get(a.id)?.length ?? 0),
+  );
+
+  const allNonJunction = ir.nodes.filter((node) => !node.isJunction);
+  const minGap = Math.max(8, Math.min(24, ir.config.layout.nodesep * 0.18));
+
+  const localScore = (node: DiagramIr["nodes"][number], candX: number, candY: number): number => {
+    let score = 0;
+
+    for (const other of allNonJunction) {
+      if (other.id === node.id) {
+        continue;
+      }
+
+      const overlap = expandedOverlapArea(node, other, minGap, { x: candX, y: candY });
+      if (overlap > 0) {
+        score += overlap * 5.2;
+      }
+    }
+
+    const center = nodeCenter(node, { x: candX, y: candY });
+    const incident = incidentEdges.get(node.id) ?? [];
+    for (const edge of incident) {
+      const otherId = edge.fromId === node.id ? edge.toId : edge.fromId;
+      const other = nodeById.get(otherId);
+      if (!other) {
+        continue;
+      }
+
+      const otherCenter = nodeCenter(other);
+      const dist = Math.hypot(center.x - otherCenter.x, center.y - otherCenter.y);
+      score += dist * 0.52;
+      if (dist < 28) {
+        score += (28 - dist) * 26;
+      }
+
+      const fromCenter = edge.fromId === node.id ? center : otherCenter;
+      const toCenter = edge.toId === node.id ? center : otherCenter;
+      score += directionalPenalty(fromCenter, toCenter, rankdir);
+    }
+
+    for (const edge of incident) {
+      const segmentA = segmentForEdge(edge, nodeById, { nodeId: node.id, x: candX, y: candY });
+      if (!segmentA) {
+        continue;
+      }
+
+      for (const otherEdge of edges) {
+        if (otherEdge === edge) {
+          continue;
+        }
+
+        if (
+          otherEdge.fromId === edge.fromId ||
+          otherEdge.fromId === edge.toId ||
+          otherEdge.toId === edge.fromId ||
+          otherEdge.toId === edge.toId
+        ) {
+          continue;
+        }
+
+        const segmentB = segmentForEdge(otherEdge, nodeById);
+        if (!segmentB) {
+          continue;
+        }
+
+        if (segmentsCross(segmentA, segmentB)) {
+          score += 680;
+        }
+      }
+    }
+
+    const anchor = anchors.get(node.id);
+    if (anchor) {
+      const drift = Math.hypot(candX - anchor.x, candY - anchor.y);
+      score += drift * 0.36;
+    }
+
+    return score;
+  };
+
+  let step = clamp(Math.max(18, ir.config.layout.nodesep * 0.44), 18, 84);
+  const candidateOffsets = (s: number): Array<{ dx: number; dy: number }> => [
+    { dx: 0, dy: 0 },
+    { dx: s, dy: 0 },
+    { dx: -s, dy: 0 },
+    { dx: 0, dy: s },
+    { dx: 0, dy: -s },
+    { dx: s * 0.7, dy: s * 0.7 },
+    { dx: s * 0.7, dy: -s * 0.7 },
+    { dx: -s * 0.7, dy: s * 0.7 },
+    { dx: -s * 0.7, dy: -s * 0.7 },
+  ];
+
+  for (let round = 0; round < 7; round += 1) {
+    for (const node of optimizationOrder) {
+      const baseX = node.x;
+      const baseY = node.y;
+      let bestX = baseX;
+      let bestY = baseY;
+      let bestScore = localScore(node, baseX, baseY);
+
+      for (const offset of candidateOffsets(step)) {
+        const candX = baseX + offset.dx;
+        const candY = baseY + offset.dy;
+        const score = localScore(node, candX, candY);
+        if (score + 1e-6 < bestScore) {
+          bestScore = score;
+          bestX = candX;
+          bestY = candY;
+        }
+      }
+
+      if (Math.abs(bestX - baseX) > 0.01 || Math.abs(bestY - baseY) > 0.01) {
+        node.x = bestX;
+        node.y = bestY;
+        moved.add(node.id);
+      }
+    }
+
+    resolveNodeCollisions(movableNodes, minGap, 2);
+    step = Math.max(6, step * 0.72);
+  }
+
+  return moved;
+}
+
+function rebuildEdgeRoutesFromNodeCenters(ir: DiagramIr): void {
+  const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
+
+  for (const edge of ir.edges) {
+    const from = nodeById.get(edge.from);
+    const to = nodeById.get(edge.to);
+    if (!from || !to || from.id === to.id) {
+      edge.points = [];
+      edge.labelPosition = undefined;
+      continue;
+    }
+
+    const p0 = nodeCenter(from);
+    const p1 = nodeCenter(to);
+    edge.points = [p0, p1];
+    edge.labelPosition = edge.label
+      ? {
+          x: (p0.x + p1.x) / 2,
+          y: (p0.y + p1.y) / 2,
+        }
+      : undefined;
+  }
+}
+
 function applyLayout(ir: DiagramIr): void {
   const graph = new dagre.graphlib.Graph({ multigraph: true, compound: true });
   const subgraphIds = new Set(ir.subgraphs.map((subgraph) => subgraph.id));
@@ -324,38 +657,35 @@ function applyLayout(ir: DiagramIr): void {
   }
 
   const movedByJunction = enforceJunctionSidePlacement(ir);
+  const movedByOptimization = optimizeNodePlacement(ir, toRankdir(ir.meta.direction), movedByJunction);
+  const movedNodeIds = new Set<string>([...movedByJunction, ...movedByOptimization]);
 
-  for (const edge of ir.edges) {
-    const layoutEdge = graph.edge({ v: edge.from, w: edge.to, name: edge.id }) as
-      | { points?: Array<{ x: number; y: number }>; x?: number; y?: number }
-      | undefined;
-
-    if (!layoutEdge) {
-      continue;
-    }
-
-    edge.points = Array.isArray(layoutEdge.points)
-      ? layoutEdge.points.map((point) => ({
-          x: point.x,
-          y: point.y,
-        }))
-      : [];
-
-    if (typeof layoutEdge.x === "number" && typeof layoutEdge.y === "number") {
-      edge.labelPosition = {
-        x: layoutEdge.x,
-        y: layoutEdge.y,
-      };
-    } else if (edge.label) {
-      edge.labelPosition = fallbackLabelPosition(edge.points);
-    }
-  }
-
-  if (movedByJunction.size > 0) {
+  if (movedNodeIds.size > 0) {
+    rebuildEdgeRoutesFromNodeCenters(ir);
+  } else {
     for (const edge of ir.edges) {
-      if (movedByJunction.has(edge.from) || movedByJunction.has(edge.to)) {
-        edge.points = [];
-        edge.labelPosition = undefined;
+      const layoutEdge = graph.edge({ v: edge.from, w: edge.to, name: edge.id }) as
+        | { points?: Array<{ x: number; y: number }>; x?: number; y?: number }
+        | undefined;
+
+      if (!layoutEdge) {
+        continue;
+      }
+
+      edge.points = Array.isArray(layoutEdge.points)
+        ? layoutEdge.points.map((point) => ({
+            x: point.x,
+            y: point.y,
+          }))
+        : [];
+
+      if (typeof layoutEdge.x === "number" && typeof layoutEdge.y === "number") {
+        edge.labelPosition = {
+          x: layoutEdge.x,
+          y: layoutEdge.y,
+        };
+      } else if (edge.label) {
+        edge.labelPosition = fallbackLabelPosition(edge.points);
       }
     }
   }
