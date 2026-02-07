@@ -234,10 +234,10 @@ function mergePatchWithLayout(basePatch: DiagramPatch | undefined, layout: Parti
 }
 
 function buildPdcaLayoutTrials(baseLayout: LayoutConfig, maxTrials: number): Array<{ id: string; layout: LayoutConfig }> {
-  const nodeScales = [1.0, 1.08, 1.16, 1.26, 1.38];
-  const rankScales = [1.0, 1.08, 1.18, 1.3, 1.45];
-  const edgeScales = [1.0, 1.08, 1.16, 1.26];
-  const marginScales = [1.0, 1.1, 1.22];
+  const nodeScales = [0.92, 1.0, 1.08, 1.16, 1.26];
+  const rankScales = [0.92, 1.0, 1.1, 1.22, 1.36];
+  const edgeScales = [0.94, 1.0, 1.08, 1.18];
+  const marginScales = [0.94, 1.0, 1.1, 1.22];
 
   const candidates: Array<{ key: string; priority: number; layout: LayoutConfig }> = [];
 

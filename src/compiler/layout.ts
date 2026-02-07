@@ -45,11 +45,11 @@ function resolveReadableLayoutConfig(ir: DiagramIr): LayoutConfig {
   const complexity = clamp(sizeLoad * 0.45 + edgeLoad * 0.35 + textLoad * 0.2, 0, 1);
 
   return {
-    nodesep: Math.round(clamp(base.nodesep * (1 + complexity * 0.46) + complexity * 9, base.nodesep, 360)),
-    ranksep: Math.round(clamp(base.ranksep * (1 + complexity * 0.56) + complexity * 12, base.ranksep, 480)),
-    edgesep: Math.round(clamp(base.edgesep * (1 + complexity * 0.4) + complexity * 5, base.edgesep, 220)),
-    marginx: Math.round(clamp(base.marginx * (1 + complexity * 0.48) + complexity * 10, base.marginx, 220)),
-    marginy: Math.round(clamp(base.marginy * (1 + complexity * 0.48) + complexity * 10, base.marginy, 220)),
+    nodesep: Math.round(clamp(base.nodesep * (1 + complexity * 0.26) + complexity * 6, base.nodesep * 0.92, 320)),
+    ranksep: Math.round(clamp(base.ranksep * (1 + complexity * 0.34) + complexity * 8, base.ranksep * 0.9, 420)),
+    edgesep: Math.round(clamp(base.edgesep * (1 + complexity * 0.24) + complexity * 4, base.edgesep * 0.9, 200)),
+    marginx: Math.round(clamp(base.marginx * (1 + complexity * 0.34) + complexity * 7, base.marginx * 0.9, 180)),
+    marginy: Math.round(clamp(base.marginy * (1 + complexity * 0.34) + complexity * 7, base.marginy * 0.9, 180)),
   };
 }
 
@@ -427,6 +427,31 @@ function resolveNodeCollisions(nodes: DiagramIr["nodes"], gap: number, passes: n
       }
     }
   }
+}
+
+function resolveAllNodeCollisions(ir: DiagramIr, gap: number, passes: number): boolean {
+  const nodes = ir.nodes.filter((node) => !node.isJunction);
+  if (nodes.length < 2) {
+    return false;
+  }
+
+  let before = 0;
+  for (let i = 0; i < nodes.length; i += 1) {
+    for (let j = i + 1; j < nodes.length; j += 1) {
+      before += expandedOverlapArea(nodes[i], nodes[j], 0);
+    }
+  }
+
+  resolveNodeCollisions(nodes, gap, passes);
+
+  let after = 0;
+  for (let i = 0; i < nodes.length; i += 1) {
+    for (let j = i + 1; j < nodes.length; j += 1) {
+      after += expandedOverlapArea(nodes[i], nodes[j], 0);
+    }
+  }
+
+  return after + 1e-3 < before;
 }
 
 function cellKey(ix: number, iy: number): string {
@@ -1393,6 +1418,72 @@ function enforceTopLevelSubgraphSeparation(ir: DiagramIr, layoutConfig: LayoutCo
   return moved;
 }
 
+function compactLayoutDensity(ir: DiagramIr, rankdir: Rankdir, layoutConfig: LayoutConfig, passes: number = 10): boolean {
+  const nodes = ir.nodes.filter((node) => !node.isJunction);
+  if (nodes.length <= 1) {
+    return false;
+  }
+
+  let moved = false;
+  const targetOccupancy = 0.1;
+  for (let pass = 0; pass < passes; pass += 1) {
+    recomputeSubgraphBounds(ir);
+    recomputeBounds(ir);
+
+    const nodeArea = nodes.reduce((sum, node) => sum + node.width * node.height, 0);
+    const boundsArea = Math.max(1, ir.bounds.width * ir.bounds.height);
+    const occupancy = nodeArea / boundsArea;
+    if (occupancy >= targetOccupancy) {
+      break;
+    }
+
+    const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
+    const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
+    const squeezeX = rankdir === "TB" || rankdir === "BT" ? 0.936 : 0.952;
+    const squeezeY = rankdir === "TB" || rankdir === "BT" ? 0.952 : 0.936;
+
+    let shifted = false;
+    for (const node of nodes) {
+      const nodeCx = node.x + node.width / 2;
+      const nodeCy = node.y + node.height / 2;
+      const nextCx = cx + (nodeCx - cx) * squeezeX;
+      const nextCy = cy + (nodeCy - cy) * squeezeY;
+      const dx = nextCx - nodeCx;
+      const dy = nextCy - nodeCy;
+      if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
+        continue;
+      }
+      node.x += dx;
+      node.y += dy;
+      shifted = true;
+    }
+
+    if (!shifted) {
+      break;
+    }
+
+    moved = true;
+    resolveAllNodeCollisions(ir, Math.max(8, Math.min(layoutConfig.nodesep, layoutConfig.ranksep) * 0.16), 4);
+    enforceTopLevelSubgraphSeparation(ir, layoutConfig, 5);
+  }
+
+  return moved;
+}
+
+function enforceSpatialConstraints(ir: DiagramIr, layoutConfig: LayoutConfig, passes: number = 8): boolean {
+  let moved = false;
+  const gap = Math.max(8, Math.min(layoutConfig.nodesep, layoutConfig.ranksep) * 0.16);
+  for (let i = 0; i < passes; i += 1) {
+    const movedByCollision = resolveAllNodeCollisions(ir, gap, 3);
+    const movedBySubgraph = enforceTopLevelSubgraphSeparation(ir, layoutConfig, 4);
+    if (!movedByCollision && !movedBySubgraph) {
+      break;
+    }
+    moved = true;
+  }
+  return moved;
+}
+
 function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir, layoutConfig: LayoutConfig): number {
   const nonJunctionNodes = ir.nodes.filter((node) => !node.isJunction);
   let nodeOverlapPenalty = 0;
@@ -1470,8 +1561,8 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir, layoutConfig: Layou
   const nodeArea = nonJunctionNodes.reduce((sum, node) => sum + node.width * node.height, 0);
   const boundsArea = Math.max(1, ir.bounds.width * ir.bounds.height);
   const occupancyRatio = nodeArea / boundsArea;
-  const overcrowdedPenalty = Math.max(0, occupancyRatio - 0.17) * 9800;
-  const sparsePenalty = Math.max(0, 0.07 - occupancyRatio) * 1700;
+  const overcrowdedPenalty = Math.max(0, occupancyRatio - 0.2) * 9000;
+  const sparsePenalty = Math.max(0, 0.11 - occupancyRatio) * 12000;
 
   return (
     nodeOverlapPenalty * 9.2 +
@@ -1554,6 +1645,26 @@ function optimizeLayoutWithRestarts(
     recomputeBounds(ir);
     const movedBySubgraphConstraint = enforceTopLevelSubgraphSeparation(ir, layoutConfig, 8);
     if (movedBySubgraphConstraint) {
+      inferEdgeSideHints(ir, rankdir);
+      rebuildEdgeRoutesFromSideAnchors(ir);
+      recomputeSubgraphBounds(ir);
+      recomputeBounds(ir);
+    }
+
+    const movedByCollision = resolveAllNodeCollisions(ir, Math.max(10, Math.min(layoutConfig.nodesep, layoutConfig.ranksep) * 0.18), 3);
+    if (movedByCollision) {
+      const movedAgainBySubgraph = enforceSpatialConstraints(ir, layoutConfig, 6);
+      inferEdgeSideHints(ir, rankdir);
+      rebuildEdgeRoutesFromSideAnchors(ir);
+      if (movedAgainBySubgraph) {
+        recomputeSubgraphBounds(ir);
+        recomputeBounds(ir);
+      }
+    }
+
+    const movedByCompaction = compactLayoutDensity(ir, rankdir, layoutConfig, 9);
+    if (movedByCompaction) {
+      enforceSpatialConstraints(ir, layoutConfig, 8);
       inferEdgeSideHints(ir, rankdir);
       rebuildEdgeRoutesFromSideAnchors(ir);
       recomputeSubgraphBounds(ir);
@@ -1699,7 +1810,14 @@ function applyLayout(ir: DiagramIr): void {
   const movedByJunction = enforceJunctionSidePlacement(ir);
   optimizeLayoutWithRestarts(ir, rankdir, movedByJunction, effectiveLayout);
   const movedBySubgraphConstraint = enforceTopLevelSubgraphSeparation(ir, effectiveLayout, 10);
-  if (movedBySubgraphConstraint) {
+  const movedByCollision = resolveAllNodeCollisions(
+    ir,
+    Math.max(10, Math.min(effectiveLayout.nodesep, effectiveLayout.ranksep) * 0.18),
+    4,
+  );
+  const movedByCompaction = compactLayoutDensity(ir, rankdir, effectiveLayout, 10);
+  if (movedBySubgraphConstraint || movedByCollision || movedByCompaction) {
+    enforceSpatialConstraints(ir, effectiveLayout, 10);
     inferEdgeSideHints(ir, rankdir);
     rebuildEdgeRoutesFromSideAnchors(ir);
   }
