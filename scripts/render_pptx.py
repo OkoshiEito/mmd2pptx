@@ -1452,7 +1452,6 @@ def render(
         )
 
     edge_items: list[dict[str, Any]] = []
-    pair_side_selection: dict[tuple[str, str], tuple[int, int]] = {}
     pending_edges: list[dict[str, Any]] = []
 
     for edge in ir.get("edges", []):
@@ -1475,11 +1474,7 @@ def render(
                 node_box, slide_w=slide_w, slide_h=slide_h
             )
         else:
-            reverse_key = (dst_id, src_id)
-            reverse_selected = pair_side_selection.get(reverse_key)
-            avoid_pair = (reverse_selected[1], reverse_selected[0]) if reverse_selected is not None else None
-            src_side, dst_side = choose_connection_sides(src, dst, avoid_exact_pair=avoid_pair)
-            pair_side_selection[(src_id, dst_id)] = (src_side, dst_side)
+            src_side, dst_side = choose_connection_sides(src, dst)
             loop_points = None
             loop_label_anchor = None
 
@@ -1502,55 +1497,35 @@ def render(
             }
         )
 
-    src_side_groups: dict[tuple[str, int], list[int]] = {}
-    dst_side_groups: dict[tuple[str, int], list[int]] = {}
+    side_groups: dict[tuple[str, int], list[tuple[int, bool]]] = {}
     for idx, item in enumerate(pending_edges):
         if item["isSelfLoop"]:
             continue
-        src_key = (item["srcId"], int(item["srcSide"]))
-        dst_key = (item["dstId"], int(item["dstSide"]))
-        src_side_groups.setdefault(src_key, []).append(idx)
-        dst_side_groups.setdefault(dst_key, []).append(idx)
+        side_groups.setdefault((item["srcId"], int(item["srcSide"])), []).append((idx, True))
+        side_groups.setdefault((item["dstId"], int(item["dstSide"])), []).append((idx, False))
 
-    for (src_id, src_side), idxs in src_side_groups.items():
-        if len(idxs) <= 1:
+    for (node_id, side), members in side_groups.items():
+        if len(members) <= 1:
             continue
-        src_node = node_map.get(src_id)
-        if not src_node:
+        node = node_map.get(node_id)
+        if not node:
             continue
-        span = float(src_node["width"]) if src_side in {TOP, BOTTOM} else float(src_node["height"])
-        sorted_idxs = sorted(
-            idxs,
-            key=lambda i: side_sort_axis(
-                src_side,
-                pending_edges[i]["src"],
-                pending_edges[i]["dst"],
-                source_side=True,
+        span = float(node["width"]) if side in {TOP, BOTTOM} else float(node["height"])
+        sorted_members = sorted(
+            members,
+            key=lambda item: side_sort_axis(
+                side,
+                pending_edges[item[0]]["src"],
+                pending_edges[item[0]]["dst"],
+                source_side=item[1],
             ),
         )
-        offsets = lane_offsets(len(sorted_idxs), span)
-        for offset_idx, edge_idx in enumerate(sorted_idxs):
-            pending_edges[edge_idx]["srcOffsetPx"] = offsets[offset_idx]
-
-    for (dst_id, dst_side), idxs in dst_side_groups.items():
-        if len(idxs) <= 1:
-            continue
-        dst_node = node_map.get(dst_id)
-        if not dst_node:
-            continue
-        span = float(dst_node["width"]) if dst_side in {TOP, BOTTOM} else float(dst_node["height"])
-        sorted_idxs = sorted(
-            idxs,
-            key=lambda i: side_sort_axis(
-                dst_side,
-                pending_edges[i]["src"],
-                pending_edges[i]["dst"],
-                source_side=False,
-            ),
-        )
-        offsets = lane_offsets(len(sorted_idxs), span)
-        for offset_idx, edge_idx in enumerate(sorted_idxs):
-            pending_edges[edge_idx]["dstOffsetPx"] = offsets[offset_idx]
+        offsets = lane_offsets(len(sorted_members), span)
+        for offset_idx, (edge_idx, is_source) in enumerate(sorted_members):
+            if is_source:
+                pending_edges[edge_idx]["srcOffsetPx"] = offsets[offset_idx]
+            else:
+                pending_edges[edge_idx]["dstOffsetPx"] = offsets[offset_idx]
 
     for pending in pending_edges:
         edge = pending["edge"]
@@ -1603,7 +1578,13 @@ def render(
             dst_x, dst_y = side_anchor_point(dst, dst_side, dst_offset_px)
             sx, sy = transform(src_x, src_y, scale, offset_x, offset_y)
             dx, dy = transform(dst_x, dst_y, scale, offset_x, offset_y)
-            use_manual_anchors = abs(src_offset_px) > 0.8 or abs(dst_offset_px) > 0.8
+            start_marker_name = str(style.get("startMarker", "")).strip()
+            end_marker_name = str(style.get("endMarker", "")).strip()
+            marker_needs_manual_anchor = start_marker_name in {"circle", "openDiamond"} or end_marker_name in {
+                "circle",
+                "openDiamond",
+            }
+            use_manual_anchors = abs(src_offset_px) > 0.8 or abs(dst_offset_px) > 0.8 or marker_needs_manual_anchor
 
             connector_type = MSO_CONNECTOR.ELBOW if routing_mode == "elbow" else MSO_CONNECTOR.STRAIGHT
             connector = edge_group.shapes.add_connector(
