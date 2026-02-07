@@ -199,9 +199,16 @@ function enforceJunctionSidePlacement(ir: DiagramIr): Set<string> {
   return moved;
 }
 
+type Rankdir = "TB" | "BT" | "LR" | "RL";
+
 interface EdgeGeom {
   fromId: string;
   toId: string;
+}
+
+interface IndexedEdgeGeom extends EdgeGeom {
+  fromIndex: number;
+  toIndex: number;
 }
 
 interface Segment {
@@ -211,10 +218,49 @@ interface Segment {
   y2: number;
 }
 
+const EDGE_SIDES: EdgeSide[] = ["T", "L", "B", "R"];
+
 function nodeCenter(node: DiagramIr["nodes"][number], override?: { x?: number; y?: number }): Point {
   return {
     x: (override?.x ?? node.x) + node.width / 2,
     y: (override?.y ?? node.y) + node.height / 2,
+  };
+}
+
+function sideNormal(side: EdgeSide): Point {
+  if (side === "T") {
+    return { x: 0, y: -1 };
+  }
+  if (side === "L") {
+    return { x: -1, y: 0 };
+  }
+  if (side === "B") {
+    return { x: 0, y: 1 };
+  }
+  return { x: 1, y: 0 };
+}
+
+function sideAnchor(node: DiagramIr["nodes"][number], side: EdgeSide): Point {
+  const cx = node.x + node.width / 2;
+  const cy = node.y + node.height / 2;
+  if (side === "T") {
+    return { x: cx, y: node.y };
+  }
+  if (side === "L") {
+    return { x: node.x, y: cy };
+  }
+  if (side === "B") {
+    return { x: cx, y: node.y + node.height };
+  }
+  return { x: node.x + node.width, y: cy };
+}
+
+function sideOutwardAnchor(node: DiagramIr["nodes"][number], side: EdgeSide, distance: number): Point {
+  const anchor = sideAnchor(node, side);
+  const normal = sideNormal(side);
+  return {
+    x: anchor.x + normal.x * distance,
+    y: anchor.y + normal.y * distance,
   };
 }
 
@@ -274,7 +320,7 @@ function segmentsCross(a: Segment, b: Segment): boolean {
   return (o1 > 0) !== (o2 > 0) && (o3 > 0) !== (o4 > 0);
 }
 
-function directionalPenalty(from: Point, to: Point, rankdir: "TB" | "BT" | "LR" | "RL"): number {
+function directionalPenalty(from: Point, to: Point, rankdir: Rankdir): number {
   const minForward = 22;
 
   if (rankdir === "TB") {
@@ -357,20 +403,190 @@ function resolveNodeCollisions(nodes: DiagramIr["nodes"], gap: number, passes: n
   }
 }
 
-function optimizeNodePlacement(ir: DiagramIr, rankdir: "TB" | "BT" | "LR" | "RL", pinnedNodeIds: Set<string>): Set<string> {
+function cellKey(ix: number, iy: number): string {
+  return `${ix},${iy}`;
+}
+
+function buildPointSpatialIndex(cx: number[], cy: number[], cellSize: number): Map<string, number[]> {
+  const buckets = new Map<string, number[]>();
+  for (let i = 0; i < cx.length; i += 1) {
+    const key = cellKey(Math.floor(cx[i] / cellSize), Math.floor(cy[i] / cellSize));
+    const list = buckets.get(key) ?? [];
+    list.push(i);
+    buckets.set(key, list);
+  }
+  return buckets;
+}
+
+function queryPointSpatialIndex(
+  buckets: Map<string, number[]>,
+  cellSize: number,
+  x: number,
+  y: number,
+  radius: number,
+): number[] {
+  const minX = Math.floor((x - radius) / cellSize);
+  const maxX = Math.floor((x + radius) / cellSize);
+  const minY = Math.floor((y - radius) / cellSize);
+  const maxY = Math.floor((y + radius) / cellSize);
+
+  const out: number[] = [];
+  for (let ix = minX; ix <= maxX; ix += 1) {
+    for (let iy = minY; iy <= maxY; iy += 1) {
+      const list = buckets.get(cellKey(ix, iy));
+      if (!list) {
+        continue;
+      }
+      out.push(...list);
+    }
+  }
+  return out;
+}
+
+function applyCrossingNudges(
+  edges: IndexedEdgeGeom[],
+  centersX: number[],
+  centersY: number[],
+  movableNodeIndices: Set<number>,
+  fx: number[],
+  fy: number[],
+  strength: number,
+): void {
+  if (edges.length < 2 || strength <= 0) {
+    return;
+  }
+
+  const segments: Segment[] = [];
+  const midX: number[] = [];
+  const midY: number[] = [];
+  const cellSize = 140;
+  const buckets = new Map<string, number[]>();
+
+  for (let i = 0; i < edges.length; i += 1) {
+    const edge = edges[i];
+    const segment: Segment = {
+      x1: centersX[edge.fromIndex],
+      y1: centersY[edge.fromIndex],
+      x2: centersX[edge.toIndex],
+      y2: centersY[edge.toIndex],
+    };
+    segments.push(segment);
+    const mx = (segment.x1 + segment.x2) / 2;
+    const my = (segment.y1 + segment.y2) / 2;
+    midX.push(mx);
+    midY.push(my);
+    const key = cellKey(Math.floor(mx / cellSize), Math.floor(my / cellSize));
+    const list = buckets.get(key) ?? [];
+    list.push(i);
+    buckets.set(key, list);
+  }
+
+  for (let i = 0; i < edges.length; i += 1) {
+    const edgeA = edges[i];
+    const segmentA = segments[i];
+    const ax = segmentA.x2 - segmentA.x1;
+    const ay = segmentA.y2 - segmentA.y1;
+    const lenA = Math.hypot(ax, ay);
+    if (lenA < 1e-6) {
+      continue;
+    }
+
+    const bucketX = Math.floor(midX[i] / cellSize);
+    const bucketY = Math.floor(midY[i] / cellSize);
+    for (let bx = bucketX - 1; bx <= bucketX + 1; bx += 1) {
+      for (let by = bucketY - 1; by <= bucketY + 1; by += 1) {
+        const list = buckets.get(cellKey(bx, by));
+        if (!list) {
+          continue;
+        }
+
+        for (const j of list) {
+          if (j <= i) {
+            continue;
+          }
+          const edgeB = edges[j];
+          if (
+            edgeA.fromIndex === edgeB.fromIndex ||
+            edgeA.fromIndex === edgeB.toIndex ||
+            edgeA.toIndex === edgeB.fromIndex ||
+            edgeA.toIndex === edgeB.toIndex
+          ) {
+            continue;
+          }
+
+          const segmentB = segments[j];
+          if (!segmentsCross(segmentA, segmentB)) {
+            continue;
+          }
+
+          const bxv = segmentB.x2 - segmentB.x1;
+          const byv = segmentB.y2 - segmentB.y1;
+          const lenB = Math.hypot(bxv, byv);
+          if (lenB < 1e-6) {
+            continue;
+          }
+
+          const aNx = -ay / lenA;
+          const aNy = ax / lenA;
+          const bNx = -byv / lenB;
+          const bNy = bxv / lenB;
+          const phase = ((i + j) & 1) === 0 ? 1 : -1;
+          const push = strength;
+
+          if (movableNodeIndices.has(edgeA.fromIndex)) {
+            fx[edgeA.fromIndex] += aNx * push * phase;
+            fy[edgeA.fromIndex] += aNy * push * phase;
+          }
+          if (movableNodeIndices.has(edgeA.toIndex)) {
+            fx[edgeA.toIndex] += aNx * push * phase;
+            fy[edgeA.toIndex] += aNy * push * phase;
+          }
+          if (movableNodeIndices.has(edgeB.fromIndex)) {
+            fx[edgeB.fromIndex] -= bNx * push * phase;
+            fy[edgeB.fromIndex] -= bNy * push * phase;
+          }
+          if (movableNodeIndices.has(edgeB.toIndex)) {
+            fx[edgeB.toIndex] -= bNx * push * phase;
+            fy[edgeB.toIndex] -= bNy * push * phase;
+          }
+        }
+      }
+    }
+  }
+}
+
+function optimizeNodePlacement(ir: DiagramIr, rankdir: Rankdir, pinnedNodeIds: Set<string>): Set<string> {
   const moved = new Set<string>();
-  const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
-  const movableNodes = ir.nodes.filter((node) => !node.isJunction && !pinnedNodeIds.has(node.id));
+  const allNodes = ir.nodes.filter((node) => !node.isJunction);
+  if (allNodes.length <= 1) {
+    return moved;
+  }
+
+  const nodeIndexById = new Map(allNodes.map((node, index) => [node.id, index]));
+  const nodeById = new Map(allNodes.map((node) => [node.id, node]));
+  const movableNodes = allNodes.filter((node) => !pinnedNodeIds.has(node.id));
   if (movableNodes.length <= 1) {
     return moved;
   }
 
-  const edges: EdgeGeom[] = ir.edges
-    .map((edge) => ({ fromId: edge.from, toId: edge.to }))
-    .filter((edge) => nodeById.has(edge.fromId) && nodeById.has(edge.toId) && edge.fromId !== edge.toId);
+  const indexedEdges: IndexedEdgeGeom[] = ir.edges
+    .map((edge) => {
+      const fromIndex = nodeIndexById.get(edge.from);
+      const toIndex = nodeIndexById.get(edge.to);
+      if (fromIndex === undefined || toIndex === undefined || fromIndex === toIndex) {
+        return undefined;
+      }
+      return {
+        fromId: edge.from,
+        toId: edge.to,
+        fromIndex,
+        toIndex,
+      } satisfies IndexedEdgeGeom;
+    })
+    .filter((edge): edge is IndexedEdgeGeom => Boolean(edge));
 
   const incidentEdges = new Map<string, EdgeGeom[]>();
-  for (const edge of edges) {
+  for (const edge of indexedEdges) {
     const fromList = incidentEdges.get(edge.fromId) ?? [];
     fromList.push(edge);
     incidentEdges.set(edge.fromId, fromList);
@@ -379,25 +595,240 @@ function optimizeNodePlacement(ir: DiagramIr, rankdir: "TB" | "BT" | "LR" | "RL"
     incidentEdges.set(edge.toId, toList);
   }
 
+  const incidentEdgeIndices: number[][] = Array.from({ length: allNodes.length }, () => []);
+  for (let i = 0; i < indexedEdges.length; i += 1) {
+    const edge = indexedEdges[i];
+    incidentEdgeIndices[edge.fromIndex].push(i);
+    incidentEdgeIndices[edge.toIndex].push(i);
+  }
+
+  const movableNodeIndices = new Set<number>(movableNodes.map((node) => nodeIndexById.get(node.id) as number));
   const anchors = new Map(movableNodes.map((node) => [node.id, { x: node.x, y: node.y }]));
   const optimizationOrder = [...movableNodes].sort(
     (a, b) => (incidentEdges.get(b.id)?.length ?? 0) - (incidentEdges.get(a.id)?.length ?? 0),
   );
 
-  const allNonJunction = ir.nodes.filter((node) => !node.isJunction);
-  const minGap = Math.max(8, Math.min(24, ir.config.layout.nodesep * 0.18));
+  const minGap = Math.max(8, Math.min(26, ir.config.layout.nodesep * 0.2));
+  const centersX = new Array<number>(allNodes.length);
+  const centersY = new Array<number>(allNodes.length);
+  const reverseEdgeSet = new Set<string>(indexedEdges.map((edge) => `${edge.toIndex}:${edge.fromIndex}`));
+
+  const refreshCenters = (): void => {
+    for (let i = 0; i < allNodes.length; i += 1) {
+      const node = allNodes[i];
+      centersX[i] = node.x + node.width / 2;
+      centersY[i] = node.y + node.height / 2;
+    }
+  };
+
+  refreshCenters();
+
+  const idealEdgeLength = clamp((ir.config.layout.nodesep + ir.config.layout.ranksep) * 0.55, 58, 260);
+  const repulsionRadius = clamp(idealEdgeLength * 1.75, 120, 300);
+  const iterations = clamp(Math.round(26 + Math.sqrt(allNodes.length) * 9), 28, 88);
+  let temperature = clamp(Math.max(14, idealEdgeLength * 0.24), 12, 70);
+
+  for (let iter = 0; iter < iterations; iter += 1) {
+    refreshCenters();
+
+    const fx = new Array<number>(allNodes.length).fill(0);
+    const fy = new Array<number>(allNodes.length).fill(0);
+    const nodeBuckets = buildPointSpatialIndex(centersX, centersY, 120);
+
+    for (const node of movableNodes) {
+      const i = nodeIndexById.get(node.id);
+      if (i === undefined) {
+        continue;
+      }
+
+      const x = centersX[i];
+      const y = centersY[i];
+      const near = queryPointSpatialIndex(nodeBuckets, 120, x, y, repulsionRadius);
+
+      for (const j of near) {
+        if (j === i) {
+          continue;
+        }
+        const other = allNodes[j];
+        const dx = x - centersX[j];
+        const dy = y - centersY[j];
+        const dist = Math.hypot(dx, dy);
+        const safeDist = Math.max(1e-3, dist);
+
+        const overlapX = (node.width + other.width) / 2 + minGap - Math.abs(dx);
+        const overlapY = (node.height + other.height) / 2 + minGap - Math.abs(dy);
+        if (overlapX > 0 && overlapY > 0) {
+          if (overlapX < overlapY) {
+            fx[i] += (dx >= 0 ? 1 : -1) * (overlapX * 1.48 + 4.2);
+          } else {
+            fy[i] += (dy >= 0 ? 1 : -1) * (overlapY * 1.48 + 4.2);
+          }
+          continue;
+        }
+
+        if (safeDist <= repulsionRadius) {
+          const r = (repulsionRadius - safeDist) / repulsionRadius;
+          const force = r * r * 22;
+          fx[i] += (dx / safeDist) * force;
+          fy[i] += (dy / safeDist) * force;
+        }
+      }
+    }
+
+    for (const edge of indexedEdges) {
+      const fromIdx = edge.fromIndex;
+      const toIdx = edge.toIndex;
+      const dx = centersX[toIdx] - centersX[fromIdx];
+      const dy = centersY[toIdx] - centersY[fromIdx];
+      const dist = Math.max(1e-3, Math.hypot(dx, dy));
+      const ux = dx / dist;
+      const uy = dy / dist;
+
+      const fromNode = allNodes[fromIdx];
+      const toNode = allNodes[toIdx];
+      const localTarget = idealEdgeLength + (Math.max(fromNode.width, fromNode.height) + Math.max(toNode.width, toNode.height)) * 0.1;
+      const stretch = dist - localTarget;
+      const spring = stretch * 0.045;
+
+      if (movableNodeIndices.has(fromIdx)) {
+        fx[fromIdx] += ux * spring;
+        fy[fromIdx] += uy * spring;
+      }
+      if (movableNodeIndices.has(toIdx)) {
+        fx[toIdx] -= ux * spring;
+        fy[toIdx] -= uy * spring;
+      }
+
+      const fromPoint = { x: centersX[fromIdx], y: centersY[fromIdx] };
+      const toPoint = { x: centersX[toIdx], y: centersY[toIdx] };
+      const dirPenalty = directionalPenalty(fromPoint, toPoint, rankdir);
+      if (dirPenalty > 0) {
+        const force = Math.min(18, dirPenalty * 0.12);
+        if (rankdir === "TB") {
+          if (movableNodeIndices.has(fromIdx)) {
+            fy[fromIdx] -= force;
+          }
+          if (movableNodeIndices.has(toIdx)) {
+            fy[toIdx] += force;
+          }
+        } else if (rankdir === "BT") {
+          if (movableNodeIndices.has(fromIdx)) {
+            fy[fromIdx] += force;
+          }
+          if (movableNodeIndices.has(toIdx)) {
+            fy[toIdx] -= force;
+          }
+        } else if (rankdir === "LR") {
+          if (movableNodeIndices.has(fromIdx)) {
+            fx[fromIdx] -= force;
+          }
+          if (movableNodeIndices.has(toIdx)) {
+            fx[toIdx] += force;
+          }
+        } else {
+          if (movableNodeIndices.has(fromIdx)) {
+            fx[fromIdx] += force;
+          }
+          if (movableNodeIndices.has(toIdx)) {
+            fx[toIdx] -= force;
+          }
+        }
+      }
+
+      if (reverseEdgeSet.has(`${fromIdx}:${toIdx}`) && reverseEdgeSet.has(`${toIdx}:${fromIdx}`)) {
+        const nx = -uy;
+        const ny = ux;
+        const phase = ((fromIdx * 73856093) ^ (toIdx * 19349663)) & 1 ? 1 : -1;
+        const sep = 6.2 * phase;
+        if (movableNodeIndices.has(fromIdx)) {
+          fx[fromIdx] += nx * sep;
+          fy[fromIdx] += ny * sep;
+        }
+        if (movableNodeIndices.has(toIdx)) {
+          fx[toIdx] += nx * sep;
+          fy[toIdx] += ny * sep;
+        }
+      }
+    }
+
+    if ((iter + 1) % 3 === 0) {
+      applyCrossingNudges(indexedEdges, centersX, centersY, movableNodeIndices, fx, fy, Math.max(1.5, temperature * 0.14));
+    }
+
+    for (const node of movableNodes) {
+      const idx = nodeIndexById.get(node.id);
+      if (idx === undefined) {
+        continue;
+      }
+
+      const anchor = anchors.get(node.id);
+      if (anchor) {
+        const anchorX = anchor.x + node.width / 2;
+        const anchorY = anchor.y + node.height / 2;
+        fx[idx] += (anchorX - centersX[idx]) * 0.038;
+        fy[idx] += (anchorY - centersY[idx]) * 0.038;
+      }
+
+      const incident = incidentEdgeIndices[idx];
+      if (incident.length > 0) {
+        let sumX = 0;
+        let sumY = 0;
+        for (const edgeIdx of incident) {
+          const edge = indexedEdges[edgeIdx];
+          const otherIdx = edge.fromIndex === idx ? edge.toIndex : edge.fromIndex;
+          sumX += centersX[otherIdx];
+          sumY += centersY[otherIdx];
+        }
+        const avgX = sumX / incident.length;
+        const avgY = sumY / incident.length;
+        fx[idx] += (avgX - centersX[idx]) * 0.018;
+        fy[idx] += (avgY - centersY[idx]) * 0.018;
+      }
+    }
+
+    const maxStep = Math.max(2.2, temperature);
+    for (const node of movableNodes) {
+      const idx = nodeIndexById.get(node.id);
+      if (idx === undefined) {
+        continue;
+      }
+
+      let dx = fx[idx];
+      let dy = fy[idx];
+      const mag = Math.hypot(dx, dy);
+      if (mag > maxStep) {
+        const scale = maxStep / mag;
+        dx *= scale;
+        dy *= scale;
+      }
+
+      if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
+        continue;
+      }
+
+      node.x += dx;
+      node.y += dy;
+      moved.add(node.id);
+    }
+
+    if ((iter + 1) % 2 === 0) {
+      resolveNodeCollisions(movableNodes, Math.max(4, minGap * 0.85), 1);
+    }
+
+    temperature = Math.max(2.4, temperature * 0.91);
+  }
 
   const localScore = (node: DiagramIr["nodes"][number], candX: number, candY: number): number => {
     let score = 0;
 
-    for (const other of allNonJunction) {
+    for (const other of allNodes) {
       if (other.id === node.id) {
         continue;
       }
 
       const overlap = expandedOverlapArea(node, other, minGap, { x: candX, y: candY });
       if (overlap > 0) {
-        score += overlap * 5.2;
+        score += overlap * 5.8;
       }
     }
 
@@ -412,9 +843,9 @@ function optimizeNodePlacement(ir: DiagramIr, rankdir: "TB" | "BT" | "LR" | "RL"
 
       const otherCenter = nodeCenter(other);
       const dist = Math.hypot(center.x - otherCenter.x, center.y - otherCenter.y);
-      score += dist * 0.52;
-      if (dist < 28) {
-        score += (28 - dist) * 26;
+      score += dist * 0.56;
+      if (dist < 26) {
+        score += (26 - dist) * 34;
       }
 
       const fromCenter = edge.fromId === node.id ? center : otherCenter;
@@ -428,7 +859,7 @@ function optimizeNodePlacement(ir: DiagramIr, rankdir: "TB" | "BT" | "LR" | "RL"
         continue;
       }
 
-      for (const otherEdge of edges) {
+      for (const otherEdge of indexedEdges) {
         if (otherEdge === edge) {
           continue;
         }
@@ -448,7 +879,7 @@ function optimizeNodePlacement(ir: DiagramIr, rankdir: "TB" | "BT" | "LR" | "RL"
         }
 
         if (segmentsCross(segmentA, segmentB)) {
-          score += 680;
+          score += 760;
         }
       }
     }
@@ -456,13 +887,13 @@ function optimizeNodePlacement(ir: DiagramIr, rankdir: "TB" | "BT" | "LR" | "RL"
     const anchor = anchors.get(node.id);
     if (anchor) {
       const drift = Math.hypot(candX - anchor.x, candY - anchor.y);
-      score += drift * 0.36;
+      score += drift * 0.38;
     }
 
     return score;
   };
 
-  let step = clamp(Math.max(18, ir.config.layout.nodesep * 0.44), 18, 84);
+  let step = clamp(Math.max(12, ir.config.layout.nodesep * 0.32), 10, 56);
   const candidateOffsets = (s: number): Array<{ dx: number; dy: number }> => [
     { dx: 0, dy: 0 },
     { dx: s, dy: 0 },
@@ -475,7 +906,7 @@ function optimizeNodePlacement(ir: DiagramIr, rankdir: "TB" | "BT" | "LR" | "RL"
     { dx: -s * 0.7, dy: -s * 0.7 },
   ];
 
-  for (let round = 0; round < 7; round += 1) {
+  for (let round = 0; round < 5; round += 1) {
     for (const node of optimizationOrder) {
       const baseX = node.x;
       const baseY = node.y;
@@ -501,34 +932,227 @@ function optimizeNodePlacement(ir: DiagramIr, rankdir: "TB" | "BT" | "LR" | "RL"
       }
     }
 
-    resolveNodeCollisions(movableNodes, minGap, 2);
-    step = Math.max(6, step * 0.72);
+    resolveNodeCollisions(movableNodes, Math.max(4, minGap * 0.75), 1);
+    step = Math.max(4, step * 0.7);
   }
 
   return moved;
 }
 
-function rebuildEdgeRoutesFromNodeCenters(ir: DiagramIr): void {
+function chooseEdgeSides(
+  fromNode: DiagramIr["nodes"][number],
+  toNode: DiagramIr["nodes"][number],
+  rankdir: Rankdir,
+  fixedStartSide: EdgeSide | undefined,
+  fixedEndSide: EdgeSide | undefined,
+  sideLoad: Map<string, number>,
+  pairLoad: Map<string, number>,
+): { startSide: EdgeSide; endSide: EdgeSide } {
+  const startCandidates = fixedStartSide ? [fixedStartSide] : EDGE_SIDES;
+  const endCandidates = fixedEndSide ? [fixedEndSide] : EDGE_SIDES;
+
+  let bestStart: EdgeSide = startCandidates[0];
+  let bestEnd: EdgeSide = endCandidates[0];
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (const startSide of startCandidates) {
+    for (const endSide of endCandidates) {
+      const p0 = sideAnchor(fromNode, startSide);
+      const p1 = sideAnchor(toNode, endSide);
+      const dx = p1.x - p0.x;
+      const dy = p1.y - p0.y;
+      const dist = Math.max(1e-3, Math.hypot(dx, dy));
+
+      let score = dist + directionalPenalty(p0, p1, rankdir) * 0.84;
+      const startNormal = sideNormal(startSide);
+      const endNormal = sideNormal(endSide);
+      const startDot = startNormal.x * dx + startNormal.y * dy;
+      const endDot = endNormal.x * (-dx) + endNormal.y * (-dy);
+      if (startDot <= 0) {
+        score += 48 + dist * 0.42;
+      }
+      if (endDot <= 0) {
+        score += 48 + dist * 0.42;
+      }
+
+      if ((startSide === "T" || startSide === "B") !== (endSide === "T" || endSide === "B")) {
+        score += 5;
+      }
+
+      score += (sideLoad.get(`${fromNode.id}:${startSide}`) ?? 0) * 18;
+      score += (sideLoad.get(`${toNode.id}:${endSide}`) ?? 0) * 18;
+
+      const pairKey = `${fromNode.id}->${toNode.id}:${startSide}${endSide}`;
+      const reverseKey = `${toNode.id}->${fromNode.id}:${endSide}${startSide}`;
+      score += (pairLoad.get(pairKey) ?? 0) * 86;
+      score += (pairLoad.get(reverseKey) ?? 0) * 134;
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestStart = startSide;
+        bestEnd = endSide;
+      }
+    }
+  }
+
+  return {
+    startSide: bestStart,
+    endSide: bestEnd,
+  };
+}
+
+function inferEdgeSideHints(ir: DiagramIr, rankdir: Rankdir): void {
+  const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
+  const sideLoad = new Map<string, number>();
+  const pairLoad = new Map<string, number>();
+
+  const sortableEdges = [...ir.edges].sort((a, b) => {
+    const aFrom = nodeById.get(a.from);
+    const aTo = nodeById.get(a.to);
+    const bFrom = nodeById.get(b.from);
+    const bTo = nodeById.get(b.to);
+
+    const aDist = aFrom && aTo ? Math.hypot(aTo.x - aFrom.x, aTo.y - aFrom.y) : 0;
+    const bDist = bFrom && bTo ? Math.hypot(bTo.x - bFrom.x, bTo.y - bFrom.y) : 0;
+    if (Math.abs(aDist - bDist) > 1e-6) {
+      return bDist - aDist;
+    }
+    return a.id.localeCompare(b.id);
+  });
+
+  for (const edge of sortableEdges) {
+    const from = nodeById.get(edge.from);
+    const to = nodeById.get(edge.to);
+    if (!from || !to) {
+      continue;
+    }
+
+    if (from.id === to.id) {
+      edge.style.startSide = edge.style.startSide ?? "R";
+      edge.style.endSide = edge.style.endSide ?? "T";
+      continue;
+    }
+
+    if (from.isJunction || to.isJunction) {
+      continue;
+    }
+
+    const sides = chooseEdgeSides(
+      from,
+      to,
+      rankdir,
+      edge.style.startSide,
+      edge.style.endSide,
+      sideLoad,
+      pairLoad,
+    );
+    edge.style.startSide = sides.startSide;
+    edge.style.endSide = sides.endSide;
+
+    const startKey = `${from.id}:${sides.startSide}`;
+    const endKey = `${to.id}:${sides.endSide}`;
+    sideLoad.set(startKey, (sideLoad.get(startKey) ?? 0) + 1);
+    sideLoad.set(endKey, (sideLoad.get(endKey) ?? 0) + 1);
+
+    const pairKey = `${from.id}->${to.id}:${sides.startSide}${sides.endSide}`;
+    pairLoad.set(pairKey, (pairLoad.get(pairKey) ?? 0) + 1);
+  }
+}
+
+function simplifyPolyline(points: Point[]): Point[] {
+  if (points.length <= 2) {
+    return points;
+  }
+
+  const deduped: Point[] = [];
+  for (const point of points) {
+    const prev = deduped[deduped.length - 1];
+    if (!prev || Math.hypot(prev.x - point.x, prev.y - point.y) > 1e-3) {
+      deduped.push(point);
+    }
+  }
+
+  if (deduped.length <= 2) {
+    return deduped;
+  }
+
+  const simplified: Point[] = [deduped[0]];
+  for (let i = 1; i < deduped.length - 1; i += 1) {
+    const a = simplified[simplified.length - 1];
+    const b = deduped[i];
+    const c = deduped[i + 1];
+    const area = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+    if (area > 1e-3) {
+      simplified.push(b);
+    }
+  }
+  simplified.push(deduped[deduped.length - 1]);
+  return simplified;
+}
+
+function rebuildEdgeRoutesFromSideAnchors(ir: DiagramIr): void {
   const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
 
   for (const edge of ir.edges) {
     const from = nodeById.get(edge.from);
     const to = nodeById.get(edge.to);
-    if (!from || !to || from.id === to.id) {
+    if (!from || !to) {
       edge.points = [];
       edge.labelPosition = undefined;
       continue;
     }
 
-    const p0 = nodeCenter(from);
-    const p1 = nodeCenter(to);
-    edge.points = [p0, p1];
-    edge.labelPosition = edge.label
-      ? {
-          x: (p0.x + p1.x) / 2,
-          y: (p0.y + p1.y) / 2,
-        }
-      : undefined;
+    const startSide = edge.style.startSide ?? "R";
+    const endSide = edge.style.endSide ?? "L";
+
+    if (from.id === to.id) {
+      const loopExtent = Math.max(30, Math.min(160, Math.max(from.width, from.height) * 0.95));
+      const start = sideAnchor(from, startSide);
+      const end = sideAnchor(to, endSide);
+      const startOut = sideOutwardAnchor(from, startSide, loopExtent);
+      const endOut = sideOutwardAnchor(to, endSide, loopExtent);
+      const bridge =
+        startSide === "L" || startSide === "R"
+          ? { x: startOut.x, y: endOut.y }
+          : { x: endOut.x, y: startOut.y };
+      const points = simplifyPolyline([start, startOut, bridge, endOut, end]);
+      edge.points = points;
+      edge.labelPosition = edge.label ? fallbackLabelPosition(points) : undefined;
+      continue;
+    }
+
+    const start = sideAnchor(from, startSide);
+    const end = sideAnchor(to, endSide);
+    const startOut = sideOutwardAnchor(from, startSide, Math.max(12, Math.min(56, Math.min(from.width, from.height) * 0.32)));
+    const endOut = sideOutwardAnchor(to, endSide, Math.max(12, Math.min(56, Math.min(to.width, to.height) * 0.32)));
+
+    const startIsHorizontal = startSide === "L" || startSide === "R";
+    const endIsHorizontal = endSide === "L" || endSide === "R";
+
+    let middlePoints: Point[] = [];
+    if (startIsHorizontal === endIsHorizontal) {
+      if (startIsHorizontal) {
+        const midX = (startOut.x + endOut.x) / 2;
+        middlePoints = [
+          { x: midX, y: startOut.y },
+          { x: midX, y: endOut.y },
+        ];
+      } else {
+        const midY = (startOut.y + endOut.y) / 2;
+        middlePoints = [
+          { x: startOut.x, y: midY },
+          { x: endOut.x, y: midY },
+        ];
+      }
+    } else if (startIsHorizontal) {
+      middlePoints = [{ x: endOut.x, y: startOut.y }];
+    } else {
+      middlePoints = [{ x: startOut.x, y: endOut.y }];
+    }
+
+    const points = simplifyPolyline([start, startOut, ...middlePoints, endOut, end]);
+    edge.points = points;
+    edge.labelPosition = edge.label ? fallbackLabelPosition(points) : undefined;
   }
 }
 
@@ -657,38 +1281,10 @@ function applyLayout(ir: DiagramIr): void {
   }
 
   const movedByJunction = enforceJunctionSidePlacement(ir);
-  const movedByOptimization = optimizeNodePlacement(ir, toRankdir(ir.meta.direction), movedByJunction);
-  const movedNodeIds = new Set<string>([...movedByJunction, ...movedByOptimization]);
+  optimizeNodePlacement(ir, toRankdir(ir.meta.direction), movedByJunction);
 
-  if (movedNodeIds.size > 0) {
-    rebuildEdgeRoutesFromNodeCenters(ir);
-  } else {
-    for (const edge of ir.edges) {
-      const layoutEdge = graph.edge({ v: edge.from, w: edge.to, name: edge.id }) as
-        | { points?: Array<{ x: number; y: number }>; x?: number; y?: number }
-        | undefined;
-
-      if (!layoutEdge) {
-        continue;
-      }
-
-      edge.points = Array.isArray(layoutEdge.points)
-        ? layoutEdge.points.map((point) => ({
-            x: point.x,
-            y: point.y,
-          }))
-        : [];
-
-      if (typeof layoutEdge.x === "number" && typeof layoutEdge.y === "number") {
-        edge.labelPosition = {
-          x: layoutEdge.x,
-          y: layoutEdge.y,
-        };
-      } else if (edge.label) {
-        edge.labelPosition = fallbackLabelPosition(edge.points);
-      }
-    }
-  }
+  inferEdgeSideHints(ir, toRankdir(ir.meta.direction));
+  rebuildEdgeRoutesFromSideAnchors(ir);
 
   recomputeSubgraphBounds(ir);
   recomputeBounds(ir);
