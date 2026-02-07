@@ -1,5 +1,5 @@
 import dagre from "dagre";
-import type { DiagramDirection, DiagramIr, Point } from "../types.js";
+import type { DiagramDirection, DiagramIr, EdgeSide, Point } from "../types.js";
 import { recomputeBounds, recomputeSubgraphBounds } from "./geometry.js";
 
 interface LayoutOptions {
@@ -97,6 +97,106 @@ function fallbackLabelPosition(points: Point[]): Point | undefined {
     x: points[0].x,
     y: points[0].y,
   };
+}
+
+type JunctionRelation = "left" | "right" | "up" | "down";
+
+function relationFromSides(nodeSide?: EdgeSide, junctionSide?: EdgeSide): JunctionRelation | undefined {
+  if (nodeSide === "R" && junctionSide === "L") {
+    return "left";
+  }
+  if (nodeSide === "L" && junctionSide === "R") {
+    return "right";
+  }
+  if (nodeSide === "B" && junctionSide === "T") {
+    return "up";
+  }
+  if (nodeSide === "T" && junctionSide === "B") {
+    return "down";
+  }
+
+  if (junctionSide === "L") {
+    return "left";
+  }
+  if (junctionSide === "R") {
+    return "right";
+  }
+  if (junctionSide === "T") {
+    return "up";
+  }
+  if (junctionSide === "B") {
+    return "down";
+  }
+
+  return undefined;
+}
+
+function enforceJunctionSidePlacement(ir: DiagramIr): Set<string> {
+  const moved = new Set<string>();
+  const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
+  const junctions = ir.nodes.filter((node) => node.isJunction);
+
+  for (const junction of junctions) {
+    const junctionCx = junction.x + junction.width / 2;
+    const junctionCy = junction.y + junction.height / 2;
+
+    for (const edge of ir.edges) {
+      let otherId: string | undefined;
+      let otherSide: EdgeSide | undefined;
+      let junctionSide: EdgeSide | undefined;
+
+      if (edge.from === junction.id) {
+        otherId = edge.to;
+        otherSide = edge.style.endSide;
+        junctionSide = edge.style.startSide;
+      } else if (edge.to === junction.id) {
+        otherId = edge.from;
+        otherSide = edge.style.startSide;
+        junctionSide = edge.style.endSide;
+      }
+
+      if (!otherId) {
+        continue;
+      }
+
+      const other = nodeById.get(otherId);
+      if (!other || other.isJunction) {
+        continue;
+      }
+
+      const relation = relationFromSides(otherSide, junctionSide);
+      if (!relation) {
+        continue;
+      }
+
+      const gap = Math.max(42, Math.min(150, Math.max(other.width, other.height) * 0.72));
+
+      if (relation === "left") {
+        other.x = junction.x - gap - other.width;
+        other.y = junctionCy - other.height / 2;
+        moved.add(other.id);
+        continue;
+      }
+      if (relation === "right") {
+        other.x = junction.x + junction.width + gap;
+        other.y = junctionCy - other.height / 2;
+        moved.add(other.id);
+        continue;
+      }
+      if (relation === "up") {
+        other.x = junctionCx - other.width / 2;
+        other.y = junction.y - gap - other.height;
+        moved.add(other.id);
+        continue;
+      }
+
+      other.x = junctionCx - other.width / 2;
+      other.y = junction.y + junction.height + gap;
+      moved.add(other.id);
+    }
+  }
+
+  return moved;
 }
 
 function applyLayout(ir: DiagramIr): void {
@@ -223,6 +323,8 @@ function applyLayout(ir: DiagramIr): void {
     node.y = layoutNode.y - node.height / 2;
   }
 
+  const movedByJunction = enforceJunctionSidePlacement(ir);
+
   for (const edge of ir.edges) {
     const layoutEdge = graph.edge({ v: edge.from, w: edge.to, name: edge.id }) as
       | { points?: Array<{ x: number; y: number }>; x?: number; y?: number }
@@ -246,6 +348,15 @@ function applyLayout(ir: DiagramIr): void {
       };
     } else if (edge.label) {
       edge.labelPosition = fallbackLabelPosition(edge.points);
+    }
+  }
+
+  if (movedByJunction.size > 0) {
+    for (const edge of ir.edges) {
+      if (movedByJunction.has(edge.from) || movedByJunction.has(edge.to)) {
+        edge.points = [];
+        edge.labelPosition = undefined;
+      }
     }
   }
 
