@@ -122,11 +122,14 @@ function ensureNode(
   nodeOrder: string[],
   parsed: Pick<ParsedNode, "id" | "label" | "shape" | "icon" | "isJunction" | "subgraphId">,
 ): IrNode {
+  const hasLabel = parsed.label !== undefined;
+  const parsedLabel = hasLabel ? parsed.label!.trim() : undefined;
   const existing = nodeById.get(parsed.id);
   if (existing) {
-    const nextLabel = parsed.label?.trim();
-    if (nextLabel && (existing.label === existing.id || nextLabel.length >= existing.label.length)) {
-      existing.label = nextLabel;
+    if (hasLabel && parsedLabel === "" && parsed.isJunction) {
+      existing.label = "";
+    } else if (parsedLabel && (existing.label === existing.id || existing.label === "" || parsedLabel.length >= existing.label.length)) {
+      existing.label = parsedLabel;
     }
 
     if (parsed.shape) {
@@ -148,9 +151,10 @@ function ensureNode(
     return existing;
   }
 
+  const label = hasLabel ? parsedLabel ?? "" : parsed.id;
   const node: IrNode = {
     id: parsed.id,
-    label: parsed.label?.trim() || parsed.id,
+    label,
     shape: parsed.shape ?? "rect",
     icon: parsed.icon,
     isJunction: parsed.isJunction,

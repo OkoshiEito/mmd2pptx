@@ -191,8 +191,8 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
   for (const node of ir.nodes) {
     if (node.isJunction) {
       node.label = "";
-      node.width = 14;
-      node.height = 14;
+      node.width = 2;
+      node.height = 2;
       continue;
     }
 

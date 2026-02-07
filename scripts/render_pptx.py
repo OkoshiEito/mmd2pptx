@@ -505,7 +505,18 @@ def choose_connection_sides_with_hints(
     *,
     hinted_src_side: int | None,
     hinted_dst_side: int | None,
+    strict_hints: bool = False,
 ) -> tuple[int, int]:
+    if strict_hints:
+        if hinted_src_side is not None and hinted_dst_side is not None:
+            return hinted_src_side, hinted_dst_side
+        if hinted_src_side is not None:
+            best_dst = min((TOP, LEFT, BOTTOM, RIGHT), key=lambda side: connection_cost(src, dst, hinted_src_side, side))
+            return hinted_src_side, best_dst
+        if hinted_dst_side is not None:
+            best_src = min((TOP, LEFT, BOTTOM, RIGHT), key=lambda side: connection_cost(src, dst, side, hinted_dst_side))
+            return best_src, hinted_dst_side
+
     auto_src, auto_dst = choose_connection_sides(src, dst)
     auto_cost = connection_cost(src, dst, auto_src, auto_dst)
 
@@ -1636,6 +1647,7 @@ def render(
         w = px_to_in(float(node["width"])) * scale
         h = px_to_in(float(node["height"])) * scale
         shape_name = str(node.get("shape", "rect"))
+        is_junction = bool(node.get("isJunction", False))
         style = dict(node.get("style", {}))
         theme = infer_arch_theme(node)
         if theme:
@@ -1645,6 +1657,21 @@ def render(
                 style["stroke"] = theme["stroke"]
             if str(style.get("text", "0F172A")).strip().upper() == "0F172A":
                 style["text"] = theme["text"]
+
+        if is_junction:
+            # Junction is a logical connection point. Keep it invisible in pptx.
+            anchor = slide.shapes.add_shape(
+                MSO_SHAPE.RECTANGLE,
+                Inches(x),
+                Inches(y),
+                Inches(max(w, 0.02)),
+                Inches(max(h, 0.02)),
+            )
+            anchor.fill.background()
+            anchor.line.fill.background()
+            node_shape_map[node["id"]] = anchor
+            node_box_map[node["id"]] = (x, y, w, h)
+            continue
 
         display_label = str(node.get("label", node.get("id", "")))
         if shape_name in {"forkBar", "filledCircle", "smallCircle", "framedCircle"}:
@@ -1810,11 +1837,13 @@ def render(
         else:
             requested_src_side = side_from_token(style.get("startSide"))
             requested_dst_side = side_from_token(style.get("endSide"))
+            strict_hints = bool(src_anchor.get("isJunction", False) or dst_anchor.get("isJunction", False))
             src_side, dst_side = choose_connection_sides_with_hints(
                 src_anchor,
                 dst_anchor,
                 hinted_src_side=requested_src_side,
                 hinted_dst_side=requested_dst_side,
+                strict_hints=strict_hints,
             )
             loop_points = None
             loop_label_anchor = None
@@ -1852,6 +1881,8 @@ def render(
             continue
         node = node_map.get(node_id) or subgraph_map.get(node_id)
         if not node:
+            continue
+        if bool(node.get("isJunction", False)):
             continue
         span = float(node["width"]) if side in {TOP, BOTTOM} else float(node["height"])
         sorted_members = sorted(
