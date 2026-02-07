@@ -200,6 +200,27 @@ def side_point(node: dict[str, Any], side: int) -> tuple[float, float]:
     return x + w, y + h / 2.0
 
 
+def side_anchor_point(node: dict[str, Any], side: int, along_offset: float = 0.0) -> tuple[float, float]:
+    x = float(node["x"])
+    y = float(node["y"])
+    w = float(node["width"])
+    h = float(node["height"])
+    margin = min(12.0, max(4.0, min(w, h) * 0.22))
+
+    if side == TOP:
+        ax = clampf(x + w / 2.0 + along_offset, x + margin, x + w - margin)
+        return ax, y
+    if side == BOTTOM:
+        ax = clampf(x + w / 2.0 + along_offset, x + margin, x + w - margin)
+        return ax, y + h
+    if side == LEFT:
+        ay = clampf(y + h / 2.0 + along_offset, y + margin, y + h - margin)
+        return x, ay
+
+    ay = clampf(y + h / 2.0 + along_offset, y + margin, y + h - margin)
+    return x + w, ay
+
+
 def side_normal(side: int) -> tuple[float, float]:
     if side == TOP:
         return 0.0, -1.0
@@ -285,6 +306,33 @@ def choose_connection_sides(
             best_dst = dst_side
 
     return best_src, best_dst
+
+
+def side_sort_axis(side: int, from_node: dict[str, Any], to_node: dict[str, Any], *, source_side: bool) -> float:
+    src = from_node if source_side else to_node
+    dst = to_node if source_side else from_node
+    dst_cx = float(dst["x"]) + float(dst["width"]) / 2.0
+    dst_cy = float(dst["y"]) + float(dst["height"]) / 2.0
+    src_cx = float(src["x"]) + float(src["width"]) / 2.0
+    src_cy = float(src["y"]) + float(src["height"]) / 2.0
+
+    if side in {TOP, BOTTOM}:
+        return dst_cx + (dst_cy - src_cy) * 0.03
+    return dst_cy + (dst_cx - src_cx) * 0.03
+
+
+def lane_offsets(count: int, span_px: float) -> list[float]:
+    if count <= 1:
+        return [0.0]
+
+    usable_span = max(0.0, span_px - 24.0)
+    if usable_span <= 1e-6:
+        step = 0.0
+    else:
+        step = min(15.0, max(6.0, usable_span / max(1, count)))
+
+    center = (count - 1) / 2.0
+    return [(idx - center) * step for idx in range(count)]
 
 
 def clampf(value: float, min_v: float, max_v: float) -> float:
@@ -1351,6 +1399,7 @@ def render(
 
     edge_items: list[dict[str, Any]] = []
     pair_side_selection: dict[tuple[str, str], tuple[int, int]] = {}
+    pending_edges: list[dict[str, Any]] = []
 
     for edge in ir.get("edges", []):
         src = node_map.get(edge.get("from"))
@@ -1363,27 +1412,105 @@ def render(
         src_id = str(edge.get("from", ""))
         dst_id = str(edge.get("to", ""))
         is_self_loop = src_id == dst_id
-        loop_label_anchor: tuple[float, float] | None = None
-        loop_points: list[tuple[float, float]] | None = None
 
         if is_self_loop:
             node_box = node_box_map.get(src_id)
             if node_box is None:
                 continue
-            src_side, dst_side, loop_points, label_anchor = choose_self_loop_geometry(
+            src_side, dst_side, loop_points, loop_label_anchor = choose_self_loop_geometry(
                 node_box, slide_w=slide_w, slide_h=slide_h
             )
-            loop_label_anchor = label_anchor
         else:
             reverse_key = (dst_id, src_id)
             reverse_selected = pair_side_selection.get(reverse_key)
             avoid_pair = (reverse_selected[1], reverse_selected[0]) if reverse_selected is not None else None
             src_side, dst_side = choose_connection_sides(src, dst, avoid_exact_pair=avoid_pair)
             pair_side_selection[(src_id, dst_id)] = (src_side, dst_side)
-            src_x, src_y = side_point(src, src_side)
-            dst_x, dst_y = side_point(dst, dst_side)
-            sx, sy = transform(src_x, src_y, scale, offset_x, offset_y)
-            dx, dy = transform(dst_x, dst_y, scale, offset_x, offset_y)
+            loop_points = None
+            loop_label_anchor = None
+
+        pending_edges.append(
+            {
+                "edge": edge,
+                "src": src,
+                "dst": dst,
+                "srcShape": src_shape,
+                "dstShape": dst_shape,
+                "srcId": src_id,
+                "dstId": dst_id,
+                "isSelfLoop": is_self_loop,
+                "srcSide": src_side,
+                "dstSide": dst_side,
+                "loopPoints": loop_points,
+                "loopLabelAnchor": loop_label_anchor,
+                "srcOffsetPx": 0.0,
+                "dstOffsetPx": 0.0,
+            }
+        )
+
+    src_side_groups: dict[tuple[str, int], list[int]] = {}
+    dst_side_groups: dict[tuple[str, int], list[int]] = {}
+    for idx, item in enumerate(pending_edges):
+        if item["isSelfLoop"]:
+            continue
+        src_key = (item["srcId"], int(item["srcSide"]))
+        dst_key = (item["dstId"], int(item["dstSide"]))
+        src_side_groups.setdefault(src_key, []).append(idx)
+        dst_side_groups.setdefault(dst_key, []).append(idx)
+
+    for (src_id, src_side), idxs in src_side_groups.items():
+        if len(idxs) <= 1:
+            continue
+        src_node = node_map.get(src_id)
+        if not src_node:
+            continue
+        span = float(src_node["width"]) if src_side in {TOP, BOTTOM} else float(src_node["height"])
+        sorted_idxs = sorted(
+            idxs,
+            key=lambda i: side_sort_axis(
+                src_side,
+                pending_edges[i]["src"],
+                pending_edges[i]["dst"],
+                source_side=True,
+            ),
+        )
+        offsets = lane_offsets(len(sorted_idxs), span)
+        for offset_idx, edge_idx in enumerate(sorted_idxs):
+            pending_edges[edge_idx]["srcOffsetPx"] = offsets[offset_idx]
+
+    for (dst_id, dst_side), idxs in dst_side_groups.items():
+        if len(idxs) <= 1:
+            continue
+        dst_node = node_map.get(dst_id)
+        if not dst_node:
+            continue
+        span = float(dst_node["width"]) if dst_side in {TOP, BOTTOM} else float(dst_node["height"])
+        sorted_idxs = sorted(
+            idxs,
+            key=lambda i: side_sort_axis(
+                dst_side,
+                pending_edges[i]["src"],
+                pending_edges[i]["dst"],
+                source_side=False,
+            ),
+        )
+        offsets = lane_offsets(len(sorted_idxs), span)
+        for offset_idx, edge_idx in enumerate(sorted_idxs):
+            pending_edges[edge_idx]["dstOffsetPx"] = offsets[offset_idx]
+
+    for pending in pending_edges:
+        edge = pending["edge"]
+        src = pending["src"]
+        dst = pending["dst"]
+        src_shape = pending["srcShape"]
+        dst_shape = pending["dstShape"]
+        is_self_loop = bool(pending["isSelfLoop"])
+        src_side = int(pending["srcSide"])
+        dst_side = int(pending["dstSide"])
+        loop_points = pending["loopPoints"]
+        loop_label_anchor = pending["loopLabelAnchor"]
+        src_offset_px = float(pending["srcOffsetPx"])
+        dst_offset_px = float(pending["dstOffsetPx"])
 
         edge_group = slide.shapes.add_group_shape()
         style = edge.get("style", {})
@@ -1418,6 +1545,12 @@ def render(
             else:
                 continue
         else:
+            src_x, src_y = side_anchor_point(src, src_side, src_offset_px)
+            dst_x, dst_y = side_anchor_point(dst, dst_side, dst_offset_px)
+            sx, sy = transform(src_x, src_y, scale, offset_x, offset_y)
+            dx, dy = transform(dst_x, dst_y, scale, offset_x, offset_y)
+            use_manual_anchors = abs(src_offset_px) > 0.8 or abs(dst_offset_px) > 0.8
+
             connector_type = MSO_CONNECTOR.ELBOW if routing_mode == "elbow" else MSO_CONNECTOR.STRAIGHT
             connector = edge_group.shapes.add_connector(
                 connector_type,
@@ -1427,18 +1560,20 @@ def render(
                 Inches(dy),
             )
 
-            try:
-                connector.begin_connect(src_shape, src_side)
-                connector.end_connect(dst_shape, dst_side)
-            except Exception:
-                pass
+            if not use_manual_anchors:
+                try:
+                    connector.begin_connect(src_shape, src_side)
+                    connector.end_connect(dst_shape, dst_side)
+                except Exception:
+                    pass
 
             apply_line_style(connector.line, style)
             set_edge_markers(connector, style)
-            sx = emu_to_in(float(connector.begin_x))
-            sy = emu_to_in(float(connector.begin_y))
-            dx = emu_to_in(float(connector.end_x))
-            dy = emu_to_in(float(connector.end_y))
+            if not use_manual_anchors:
+                sx = emu_to_in(float(connector.begin_x))
+                sy = emu_to_in(float(connector.begin_y))
+                dx = emu_to_in(float(connector.end_x))
+                dy = emu_to_in(float(connector.end_y))
 
         edge_items.append(
             {
