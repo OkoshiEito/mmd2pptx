@@ -392,7 +392,8 @@ export function evaluateReadability(ir: DiagramIr): ReadabilityEvaluation {
   const totalNodeArea = nodes.reduce((sum, node) => sum + node.width * node.height, 0);
   const boundsArea = Math.max(1, ir.bounds.width * ir.bounds.height);
   const occupancyRatio = totalNodeArea / boundsArea;
-  const occupancyPenalty = Math.abs(occupancyRatio - 0.22);
+  const occupancyPenalty =
+    occupancyRatio > 0.16 ? (occupancyRatio - 0.16) : (0.16 - occupancyRatio) * 0.18;
 
   const metrics: ReadabilityMetrics = {
     nodeOverlapArea,
@@ -424,7 +425,7 @@ export function evaluateReadability(ir: DiagramIr): ReadabilityEvaluation {
     metrics.textOverflowRiskCount * 300 +
     metrics.totalEdgeBends * 20 +
     metrics.directionalBackflowPenalty * 4.5 +
-    metrics.occupancyPenalty * 620;
+    metrics.occupancyPenalty * 2400;
 
   const score = clamp(100 - Math.log10(1 + penalty) * 18, 0, 100);
   return {

@@ -1,5 +1,5 @@
 import dagre from "dagre";
-import type { DiagramDirection, DiagramIr, EdgeSide, Point } from "../types.js";
+import type { DiagramDirection, DiagramIr, EdgeSide, LayoutConfig, Point } from "../types.js";
 import { recomputeBounds, recomputeSubgraphBounds } from "./geometry.js";
 
 interface LayoutOptions {
@@ -26,6 +26,31 @@ function clampAspect(value: number | undefined): number {
     return MAX_LAYOUT_ASPECT;
   }
   return clamp(value as number, MIN_LAYOUT_ASPECT, MAX_LAYOUT_ASPECT);
+}
+
+function resolveReadableLayoutConfig(ir: DiagramIr): LayoutConfig {
+  const base = ir.config.layout;
+  const nonJunctionNodeCount = ir.nodes.filter((node) => !node.isJunction).length;
+  const edgeCount = ir.edges.length;
+  const avgLabelLength =
+    nonJunctionNodeCount > 0
+      ? ir.nodes
+          .filter((node) => !node.isJunction)
+          .reduce((sum, node) => sum + node.label.length, 0) / nonJunctionNodeCount
+      : 0;
+
+  const sizeLoad = clamp((nonJunctionNodeCount - 10) / 42, 0, 1);
+  const edgeLoad = clamp((edgeCount - Math.max(6, nonJunctionNodeCount)) / Math.max(14, nonJunctionNodeCount * 1.7), 0, 1);
+  const textLoad = clamp((avgLabelLength - 22) / 46, 0, 1);
+  const complexity = clamp(sizeLoad * 0.45 + edgeLoad * 0.35 + textLoad * 0.2, 0, 1);
+
+  return {
+    nodesep: Math.round(clamp(base.nodesep * (1 + complexity * 0.46) + complexity * 9, base.nodesep, 360)),
+    ranksep: Math.round(clamp(base.ranksep * (1 + complexity * 0.56) + complexity * 12, base.ranksep, 480)),
+    edgesep: Math.round(clamp(base.edgesep * (1 + complexity * 0.4) + complexity * 5, base.edgesep, 220)),
+    marginx: Math.round(clamp(base.marginx * (1 + complexity * 0.48) + complexity * 10, base.marginx, 220)),
+    marginy: Math.round(clamp(base.marginy * (1 + complexity * 0.48) + complexity * 10, base.marginy, 220)),
+  };
 }
 
 function toRankdir(direction: DiagramDirection): "TB" | "BT" | "LR" | "RL" {
@@ -556,7 +581,12 @@ function applyCrossingNudges(
   }
 }
 
-function optimizeNodePlacement(ir: DiagramIr, rankdir: Rankdir, pinnedNodeIds: Set<string>): Set<string> {
+function optimizeNodePlacement(
+  ir: DiagramIr,
+  rankdir: Rankdir,
+  pinnedNodeIds: Set<string>,
+  layoutConfig: LayoutConfig,
+): Set<string> {
   const moved = new Set<string>();
   const allNodes = ir.nodes.filter((node) => !node.isJunction);
   if (allNodes.length <= 1) {
@@ -609,7 +639,7 @@ function optimizeNodePlacement(ir: DiagramIr, rankdir: Rankdir, pinnedNodeIds: S
     (a, b) => (incidentEdges.get(b.id)?.length ?? 0) - (incidentEdges.get(a.id)?.length ?? 0),
   );
 
-  const minGap = Math.max(8, Math.min(26, ir.config.layout.nodesep * 0.2));
+  const minGap = Math.max(10, Math.min(34, layoutConfig.nodesep * 0.26));
   const centersX = new Array<number>(allNodes.length);
   const centersY = new Array<number>(allNodes.length);
   const reverseEdgeSet = new Set<string>(indexedEdges.map((edge) => `${edge.toIndex}:${edge.fromIndex}`));
@@ -624,7 +654,7 @@ function optimizeNodePlacement(ir: DiagramIr, rankdir: Rankdir, pinnedNodeIds: S
 
   refreshCenters();
 
-  const idealEdgeLength = clamp((ir.config.layout.nodesep + ir.config.layout.ranksep) * 0.55, 58, 260);
+  const idealEdgeLength = clamp((layoutConfig.nodesep + layoutConfig.ranksep) * 0.6, 70, 320);
   const repulsionRadius = clamp(idealEdgeLength * 1.75, 120, 300);
   const iterations = clamp(Math.round(26 + Math.sqrt(allNodes.length) * 9), 28, 88);
   let temperature = clamp(Math.max(14, idealEdgeLength * 0.24), 12, 70);
@@ -894,7 +924,7 @@ function optimizeNodePlacement(ir: DiagramIr, rankdir: Rankdir, pinnedNodeIds: S
     return score;
   };
 
-  let step = clamp(Math.max(12, ir.config.layout.nodesep * 0.32), 10, 56);
+  let step = clamp(Math.max(14, layoutConfig.nodesep * 0.38), 12, 72);
   const candidateOffsets = (s: number): Array<{ dx: number; dy: number }> => [
     { dx: 0, dy: 0 },
     { dx: s, dy: 0 },
@@ -1292,7 +1322,7 @@ function translateNodeSet(ir: DiagramIr, nodeIds: Set<string>, dx: number, dy: n
   return moved;
 }
 
-function enforceTopLevelSubgraphSeparation(ir: DiagramIr, passes: number = 8): boolean {
+function enforceTopLevelSubgraphSeparation(ir: DiagramIr, layoutConfig: LayoutConfig, passes: number = 8): boolean {
   if (ir.subgraphs.length < 2) {
     return false;
   }
@@ -1309,7 +1339,7 @@ function enforceTopLevelSubgraphSeparation(ir: DiagramIr, passes: number = 8): b
   recomputeSubgraphBounds(ir);
   recomputeBounds(ir);
 
-  const targetGap = clamp(Math.min(ir.config.layout.nodesep, ir.config.layout.ranksep) * 0.22, 8, 22);
+  const targetGap = clamp(Math.min(layoutConfig.nodesep, layoutConfig.ranksep) * 0.32, 12, 34);
   let moved = false;
 
   for (let pass = 0; pass < passes; pass += 1) {
@@ -1363,10 +1393,10 @@ function enforceTopLevelSubgraphSeparation(ir: DiagramIr, passes: number = 8): b
   return moved;
 }
 
-function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir): number {
+function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir, layoutConfig: LayoutConfig): number {
   const nonJunctionNodes = ir.nodes.filter((node) => !node.isJunction);
   let nodeOverlapPenalty = 0;
-  const overlapGap = Math.max(6, Math.min(20, ir.config.layout.nodesep * 0.18));
+  const overlapGap = Math.max(7, Math.min(24, layoutConfig.nodesep * 0.2));
   for (let i = 0; i < nonJunctionNodes.length; i += 1) {
     for (let j = i + 1; j < nonJunctionNodes.length; j += 1) {
       nodeOverlapPenalty += expandedOverlapArea(nonJunctionNodes[i], nonJunctionNodes[j], overlapGap);
@@ -1437,7 +1467,11 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir): number {
     }
   }
 
-  const spreadPenalty = ir.bounds.width * 0.024 + ir.bounds.height * 0.024;
+  const nodeArea = nonJunctionNodes.reduce((sum, node) => sum + node.width * node.height, 0);
+  const boundsArea = Math.max(1, ir.bounds.width * ir.bounds.height);
+  const occupancyRatio = nodeArea / boundsArea;
+  const overcrowdedPenalty = Math.max(0, occupancyRatio - 0.17) * 9800;
+  const sparsePenalty = Math.max(0, 0.07 - occupancyRatio) * 1700;
 
   return (
     nodeOverlapPenalty * 9.2 +
@@ -1447,7 +1481,8 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir): number {
     backwardPenalty * 4.4 +
     edgeLengthPenalty * 0.11 +
     bendPenalty * 22 +
-    spreadPenalty
+    overcrowdedPenalty +
+    sparsePenalty
   );
 }
 
@@ -1465,13 +1500,19 @@ function deterministicNoise(nodeId: string, seed: number, salt: number): number 
   return ((hash % 20001) / 10000) - 1;
 }
 
-function applyDeterministicJitter(ir: DiagramIr, pinnedNodeIds: Set<string>, rankdir: Rankdir, seed: number): void {
+function applyDeterministicJitter(
+  ir: DiagramIr,
+  pinnedNodeIds: Set<string>,
+  rankdir: Rankdir,
+  seed: number,
+  layoutConfig: LayoutConfig,
+): void {
   const movable = ir.nodes.filter((node) => !node.isJunction && !pinnedNodeIds.has(node.id));
   if (movable.length === 0) {
     return;
   }
 
-  const baseAmplitude = clamp(ir.config.layout.nodesep * 0.24, 7, 36);
+  const baseAmplitude = clamp(layoutConfig.nodesep * 0.24, 7, 42);
   const minorAmplitude = clamp(baseAmplitude * 0.58, 4, 20);
   for (const node of movable) {
     const nMain = deterministicNoise(node.id, seed, 17);
@@ -1487,7 +1528,12 @@ function applyDeterministicJitter(ir: DiagramIr, pinnedNodeIds: Set<string>, ran
   }
 }
 
-function optimizeLayoutWithRestarts(ir: DiagramIr, rankdir: Rankdir, pinnedNodeIds: Set<string>): void {
+function optimizeLayoutWithRestarts(
+  ir: DiagramIr,
+  rankdir: Rankdir,
+  pinnedNodeIds: Set<string>,
+  layoutConfig: LayoutConfig,
+): void {
   const baseState = captureLayoutState(ir);
   const candidateCount = clamp(Math.round(3 + Math.sqrt(Math.max(1, ir.nodes.length)) * 0.8), 3, 10);
 
@@ -1498,15 +1544,15 @@ function optimizeLayoutWithRestarts(ir: DiagramIr, rankdir: Rankdir, pinnedNodeI
     restoreLayoutState(ir, baseState);
 
     if (candidate > 0) {
-      applyDeterministicJitter(ir, pinnedNodeIds, rankdir, candidate);
+      applyDeterministicJitter(ir, pinnedNodeIds, rankdir, candidate, layoutConfig);
     }
 
-    optimizeNodePlacement(ir, rankdir, pinnedNodeIds);
+    optimizeNodePlacement(ir, rankdir, pinnedNodeIds, layoutConfig);
     inferEdgeSideHints(ir, rankdir);
     rebuildEdgeRoutesFromSideAnchors(ir);
     recomputeSubgraphBounds(ir);
     recomputeBounds(ir);
-    const movedBySubgraphConstraint = enforceTopLevelSubgraphSeparation(ir, 8);
+    const movedBySubgraphConstraint = enforceTopLevelSubgraphSeparation(ir, layoutConfig, 8);
     if (movedBySubgraphConstraint) {
       inferEdgeSideHints(ir, rankdir);
       rebuildEdgeRoutesFromSideAnchors(ir);
@@ -1514,7 +1560,7 @@ function optimizeLayoutWithRestarts(ir: DiagramIr, rankdir: Rankdir, pinnedNodeI
       recomputeBounds(ir);
     }
 
-    const score = scoreLayoutQuality(ir, rankdir);
+    const score = scoreLayoutQuality(ir, rankdir, layoutConfig);
     if (score + 1e-6 < bestScore) {
       bestScore = score;
       bestState = captureLayoutState(ir);
@@ -1525,15 +1571,16 @@ function optimizeLayoutWithRestarts(ir: DiagramIr, rankdir: Rankdir, pinnedNodeI
 }
 
 function applyLayout(ir: DiagramIr): void {
+  const effectiveLayout = resolveReadableLayoutConfig(ir);
   const graph = new dagre.graphlib.Graph({ multigraph: true, compound: true });
   const subgraphIds = new Set(ir.subgraphs.map((subgraph) => subgraph.id));
   graph.setGraph({
     rankdir: toRankdir(ir.meta.direction),
-    ranksep: ir.config.layout.ranksep,
-    nodesep: ir.config.layout.nodesep,
-    edgesep: ir.config.layout.edgesep,
-    marginx: ir.config.layout.marginx,
-    marginy: ir.config.layout.marginy,
+    ranksep: effectiveLayout.ranksep,
+    nodesep: effectiveLayout.nodesep,
+    edgesep: effectiveLayout.edgesep,
+    marginx: effectiveLayout.marginx,
+    marginy: effectiveLayout.marginy,
   });
   graph.setDefaultEdgeLabel(() => ({}));
 
@@ -1650,8 +1697,8 @@ function applyLayout(ir: DiagramIr): void {
 
   const rankdir = toRankdir(ir.meta.direction);
   const movedByJunction = enforceJunctionSidePlacement(ir);
-  optimizeLayoutWithRestarts(ir, rankdir, movedByJunction);
-  const movedBySubgraphConstraint = enforceTopLevelSubgraphSeparation(ir, 10);
+  optimizeLayoutWithRestarts(ir, rankdir, movedByJunction, effectiveLayout);
+  const movedBySubgraphConstraint = enforceTopLevelSubgraphSeparation(ir, effectiveLayout, 10);
   if (movedBySubgraphConstraint) {
     inferEdgeSideHints(ir, rankdir);
     rebuildEdgeRoutesFromSideAnchors(ir);
