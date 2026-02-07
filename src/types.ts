@@ -63,6 +63,7 @@ export interface ParsedNode {
   label?: string;
   shape?: NodeShape;
   icon?: string;
+  isJunction?: boolean;
   subgraphId?: string;
   inlineClasses?: string[];
   line: number;
@@ -148,6 +149,7 @@ export interface IrNode {
   label: string;
   shape: NodeShape;
   icon?: string;
+  isJunction?: boolean;
   subgraphId?: string;
   width: number;
   height: number;

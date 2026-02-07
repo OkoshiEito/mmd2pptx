@@ -1507,8 +1507,9 @@ function parseArchitectureDiagram(
         } else if (declaration.kind === "junction") {
           ensureNode({
             id: declaration.id,
-            label: declaration.label,
+            label: "",
             shape: "smallCircle",
+            isJunction: true,
             subgraphId: declaration.parentId,
             line: lineNumber,
             raw: trimmed,

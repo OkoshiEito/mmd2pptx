@@ -120,7 +120,7 @@ function slugify(value: string): string {
 function ensureNode(
   nodeById: Map<string, IrNode>,
   nodeOrder: string[],
-  parsed: Pick<ParsedNode, "id" | "label" | "shape" | "icon" | "subgraphId">,
+  parsed: Pick<ParsedNode, "id" | "label" | "shape" | "icon" | "isJunction" | "subgraphId">,
 ): IrNode {
   const existing = nodeById.get(parsed.id);
   if (existing) {
@@ -137,6 +137,10 @@ function ensureNode(
       existing.icon = parsed.icon;
     }
 
+    if (parsed.isJunction) {
+      existing.isJunction = true;
+    }
+
     if (parsed.subgraphId) {
       existing.subgraphId = parsed.subgraphId;
     }
@@ -149,6 +153,7 @@ function ensureNode(
     label: parsed.label?.trim() || parsed.id,
     shape: parsed.shape ?? "rect",
     icon: parsed.icon,
+    isJunction: parsed.isJunction,
     subgraphId: parsed.subgraphId,
     width: 0,
     height: 0,

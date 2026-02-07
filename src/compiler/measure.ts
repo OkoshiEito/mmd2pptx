@@ -189,6 +189,13 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
   const heightScale = heightScaleForAspect(aspect);
 
   for (const node of ir.nodes) {
+    if (node.isJunction) {
+      node.label = "";
+      node.width = 14;
+      node.height = 14;
+      continue;
+    }
+
     const fontSize = node.style.fontSize || DEFAULT_MEASURE_CONFIG.fontSize;
     const lineHeight = fontSize * DEFAULT_MEASURE_CONFIG.lineHeightRatio;
     const lines = splitLines(node.label || node.id);

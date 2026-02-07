@@ -1645,24 +1645,6 @@ def render(
                 style["stroke"] = theme["stroke"]
             if str(style.get("text", "0F172A")).strip().upper() == "0F172A":
                 style["text"] = theme["text"]
-        is_stacked_rect = shape_name == "stackedRect"
-
-        if is_stacked_rect:
-            decorate_special_node(slide, None, "stackedRect", x=x, y=y, w=w, h=h, style=style)
-
-        x, y, w, h = override_special_node_box(shape_name, x, y, w, h)
-
-        shape = slide.shapes.add_shape(
-            SHAPE_MAP.get(shape_name, MSO_SHAPE.RECTANGLE),
-            Inches(x),
-            Inches(y),
-            Inches(max(w, 0.05)),
-            Inches(max(h, 0.05)),
-        )
-
-        apply_shape_style(shape, style)
-        if not is_stacked_rect:
-            decorate_special_node(slide, shape, shape_name, x=x, y=y, w=w, h=h, style=style)
 
         display_label = str(node.get("label", node.get("id", "")))
         if shape_name in {"forkBar", "filledCircle", "smallCircle", "framedCircle"}:
@@ -1720,6 +1702,25 @@ def render(
             node_box_map[node["id"]] = (x, y, w, h)
             obstacle_boxes.append((x, y, w, h))
             continue
+
+        is_stacked_rect = shape_name == "stackedRect"
+
+        if is_stacked_rect:
+            decorate_special_node(slide, None, "stackedRect", x=x, y=y, w=w, h=h, style=style)
+
+        x, y, w, h = override_special_node_box(shape_name, x, y, w, h)
+
+        shape = slide.shapes.add_shape(
+            SHAPE_MAP.get(shape_name, MSO_SHAPE.RECTANGLE),
+            Inches(x),
+            Inches(y),
+            Inches(max(w, 0.05)),
+            Inches(max(h, 0.05)),
+        )
+
+        apply_shape_style(shape, style)
+        if not is_stacked_rect:
+            decorate_special_node(slide, shape, shape_name, x=x, y=y, w=w, h=h, style=style)
 
         set_shape_text(
             shape,
