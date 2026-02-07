@@ -52,6 +52,12 @@ node dist/cli.js build samples/flow.mmd --ir-out samples/flow.ir.json -o samples
 
 # 依存関係チェック
 node dist/cli.js doctor
+
+# 視認性PDCA（計測→候補探索→最良パッチ出力）
+node dist/cli.js pdca samples/01-repo-map.mmd --max-trials 48 --report-out samples/01-repo-map.pdca.report.json --best-patch-out samples/01-repo-map.pdca.patch.yml
+
+# PDCA最良結果でpptxも出力
+node dist/cli.js pdca samples/01-repo-map.mmd --emit-best-pptx --renderer python
 ```
 
 複数入力時の補足:
@@ -60,6 +66,12 @@ node dist/cli.js doctor
 - `--patch` は未対応
 - `--ir-out` は未対応
 - `-o` 省略時は `<先頭入力名>.merged.pptx` を出力
+
+`pdca` サブコマンドの補足:
+
+- sequenceDiagram は対象外（flow/class/architecture向け）
+- `--patch` は単一入力時のみ対応
+- 視認性評価に基づく最良 `layout` パッチを YAML として出力
 
 開発時は `tsx` で直接実行できます。
 
