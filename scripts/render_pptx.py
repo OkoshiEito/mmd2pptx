@@ -443,7 +443,58 @@ def side_faces_vector(side: int, vx: float, vy: float) -> bool:
     return nx * vx + ny * vy > 1e-6
 
 
-def connection_cost(src: dict[str, Any], dst: dict[str, Any], src_side: int, dst_side: int) -> float:
+def segment_intersects_expanded_rect(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    rx: float,
+    ry: float,
+    rw: float,
+    rh: float,
+    *,
+    padding: float = 8.0,
+) -> bool:
+    rx0 = rx - padding
+    ry0 = ry - padding
+    rx1 = rx + rw + padding
+    ry1 = ry + rh + padding
+
+    dx = x2 - x1
+    dy = y2 - y1
+    p = (-dx, dx, -dy, dy)
+    q = (x1 - rx0, rx1 - x1, y1 - ry0, ry1 - y1)
+
+    u1 = 0.0
+    u2 = 1.0
+    eps = 1e-9
+    for pi, qi in zip(p, q):
+        if abs(pi) <= eps:
+            if qi < 0:
+                return False
+            continue
+        t = qi / pi
+        if pi < 0:
+            if t > u2:
+                return False
+            if t > u1:
+                u1 = t
+        else:
+            if t < u1:
+                return False
+            if t < u2:
+                u2 = t
+    return u1 <= u2
+
+
+def connection_cost(
+    src: dict[str, Any],
+    dst: dict[str, Any],
+    src_side: int,
+    dst_side: int,
+    *,
+    obstacle_rects: list[tuple[float, float, float, float]] | None = None,
+) -> float:
     sx, sy = side_point(src, src_side)
     tx, ty = side_point(dst, dst_side)
 
@@ -473,6 +524,14 @@ def connection_cost(src: dict[str, Any], dst: dict[str, Any], src_side: int, dst
     if (src_side in {TOP, BOTTOM}) != (dst_side in {TOP, BOTTOM}):
         penalty += 5.0
 
+    if obstacle_rects:
+        obstacle_hits = 0
+        for rx, ry, rw, rh in obstacle_rects:
+            if segment_intersects_expanded_rect(sx, sy, tx, ty, rx, ry, rw, rh, padding=9.0):
+                obstacle_hits += 1
+        if obstacle_hits > 0:
+            penalty += obstacle_hits * (220.0 + min(180.0, dist * 0.16))
+
     return dist + penalty
 
 
@@ -481,6 +540,7 @@ def choose_connection_sides(
     dst: dict[str, Any],
     *,
     avoid_exact_pair: tuple[int, int] | None = None,
+    obstacle_rects: list[tuple[float, float, float, float]] | None = None,
 ) -> tuple[int, int]:
     sides = (TOP, LEFT, BOTTOM, RIGHT)
     candidates = [(s, t) for s in sides for t in sides]
@@ -489,7 +549,7 @@ def choose_connection_sides(
     best_dst = LEFT
     best_cost = float("inf")
     for src_side, dst_side in candidates:
-        cost = connection_cost(src, dst, src_side, dst_side)
+        cost = connection_cost(src, dst, src_side, dst_side, obstacle_rects=obstacle_rects)
         if avoid_exact_pair is not None and (src_side, dst_side) == avoid_exact_pair:
             cost += 2200.0
         if cost < best_cost:
@@ -507,19 +567,26 @@ def choose_connection_sides_with_hints(
     hinted_src_side: int | None,
     hinted_dst_side: int | None,
     strict_hints: bool = False,
+    obstacle_rects: list[tuple[float, float, float, float]] | None = None,
 ) -> tuple[int, int]:
     if strict_hints:
         if hinted_src_side is not None and hinted_dst_side is not None:
             return hinted_src_side, hinted_dst_side
         if hinted_src_side is not None:
-            best_dst = min((TOP, LEFT, BOTTOM, RIGHT), key=lambda side: connection_cost(src, dst, hinted_src_side, side))
+            best_dst = min(
+                (TOP, LEFT, BOTTOM, RIGHT),
+                key=lambda side: connection_cost(src, dst, hinted_src_side, side, obstacle_rects=obstacle_rects),
+            )
             return hinted_src_side, best_dst
         if hinted_dst_side is not None:
-            best_src = min((TOP, LEFT, BOTTOM, RIGHT), key=lambda side: connection_cost(src, dst, side, hinted_dst_side))
+            best_src = min(
+                (TOP, LEFT, BOTTOM, RIGHT),
+                key=lambda side: connection_cost(src, dst, side, hinted_dst_side, obstacle_rects=obstacle_rects),
+            )
             return best_src, hinted_dst_side
 
-    auto_src, auto_dst = choose_connection_sides(src, dst)
-    auto_cost = connection_cost(src, dst, auto_src, auto_dst)
+    auto_src, auto_dst = choose_connection_sides(src, dst, obstacle_rects=obstacle_rects)
+    auto_cost = connection_cost(src, dst, auto_src, auto_dst, obstacle_rects=obstacle_rects)
 
     # Accept hinted sides only when not materially worse than shortest route.
     # This keeps diagrams readable when author-provided sides conflict with the
@@ -527,21 +594,27 @@ def choose_connection_sides_with_hints(
     tolerance = max(10.0, auto_cost * 0.20)
 
     if hinted_src_side is not None and hinted_dst_side is not None:
-        hinted_cost = connection_cost(src, dst, hinted_src_side, hinted_dst_side)
+        hinted_cost = connection_cost(src, dst, hinted_src_side, hinted_dst_side, obstacle_rects=obstacle_rects)
         if hinted_cost <= auto_cost + tolerance:
             return hinted_src_side, hinted_dst_side
         return auto_src, auto_dst
 
     if hinted_src_side is not None:
-        best_dst = min((TOP, LEFT, BOTTOM, RIGHT), key=lambda side: connection_cost(src, dst, hinted_src_side, side))
-        hinted_cost = connection_cost(src, dst, hinted_src_side, best_dst)
+        best_dst = min(
+            (TOP, LEFT, BOTTOM, RIGHT),
+            key=lambda side: connection_cost(src, dst, hinted_src_side, side, obstacle_rects=obstacle_rects),
+        )
+        hinted_cost = connection_cost(src, dst, hinted_src_side, best_dst, obstacle_rects=obstacle_rects)
         if hinted_cost <= auto_cost + tolerance:
             return hinted_src_side, best_dst
         return auto_src, auto_dst
 
     if hinted_dst_side is not None:
-        best_src = min((TOP, LEFT, BOTTOM, RIGHT), key=lambda side: connection_cost(src, dst, side, hinted_dst_side))
-        hinted_cost = connection_cost(src, dst, best_src, hinted_dst_side)
+        best_src = min(
+            (TOP, LEFT, BOTTOM, RIGHT),
+            key=lambda side: connection_cost(src, dst, side, hinted_dst_side, obstacle_rects=obstacle_rects),
+        )
+        hinted_cost = connection_cost(src, dst, best_src, hinted_dst_side, obstacle_rects=obstacle_rects)
         if hinted_cost <= auto_cost + tolerance:
             return best_src, hinted_dst_side
         return auto_src, auto_dst
@@ -1840,12 +1913,27 @@ def render(
             requested_src_side = side_from_token(style.get("startSide"))
             requested_dst_side = side_from_token(style.get("endSide"))
             strict_hints = bool(src_anchor.get("isJunction", False) or dst_anchor.get("isJunction", False))
+            obstacle_rects: list[tuple[float, float, float, float]] = []
+            for candidate_id, candidate_node in node_map.items():
+                if candidate_id in {src_id, dst_id}:
+                    continue
+                if bool(candidate_node.get("isJunction", False)):
+                    continue
+                obstacle_rects.append(
+                    (
+                        float(candidate_node["x"]),
+                        float(candidate_node["y"]),
+                        float(candidate_node["width"]),
+                        float(candidate_node["height"]),
+                    )
+                )
             src_side, dst_side = choose_connection_sides_with_hints(
                 src_anchor,
                 dst_anchor,
                 hinted_src_side=requested_src_side,
                 hinted_dst_side=requested_dst_side,
                 strict_hints=strict_hints,
+                obstacle_rects=obstacle_rects,
             )
             loop_points = None
             loop_label_anchor = None
