@@ -50,6 +50,7 @@ export type NodeShape =
 export type EdgeLineStyle = "solid" | "dotted" | "thick" | "invisible";
 
 export type ArrowType = "none" | "start" | "end" | "both";
+export type EdgeMarker = "none" | "arrow" | "triangle" | "diamond" | "openDiamond" | "circle";
 
 export interface Point {
   x: number;
@@ -70,6 +71,10 @@ export interface ParsedEdge {
   from: string;
   to: string;
   label?: string;
+  startLabel?: string;
+  endLabel?: string;
+  startMarker?: EdgeMarker;
+  endMarker?: EdgeMarker;
   style: EdgeLineStyle;
   arrow: ArrowType;
   line: number;
@@ -113,6 +118,8 @@ export interface EdgeStyle {
   width: number;
   lineStyle: EdgeLineStyle;
   arrow: ArrowType;
+  startMarker: EdgeMarker;
+  endMarker: EdgeMarker;
   fontSize: number;
 }
 
@@ -142,6 +149,8 @@ export interface IrEdge {
   from: string;
   to: string;
   label?: string;
+  startLabel?: string;
+  endLabel?: string;
   points: Point[];
   labelPosition?: Point;
   style: EdgeStyle;

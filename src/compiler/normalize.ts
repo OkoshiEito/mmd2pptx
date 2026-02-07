@@ -204,11 +204,15 @@ export function normalizeDiagram(ast: DiagramAst, options: NormalizeOptions = {}
       from: parsedEdge.from,
       to: parsedEdge.to,
       label: parsedEdge.label,
+      startLabel: parsedEdge.startLabel,
+      endLabel: parsedEdge.endLabel,
       points: [],
       style: {
         ...cloneEdgeStyle(),
         lineStyle: parsedEdge.style,
         arrow: parsedEdge.arrow,
+        startMarker: parsedEdge.startMarker ?? "none",
+        endMarker: parsedEdge.endMarker ?? (parsedEdge.arrow === "end" || parsedEdge.arrow === "both" ? "arrow" : "none"),
       },
     };
   });
@@ -244,6 +248,7 @@ export function normalizeDiagram(ast: DiagramAst, options: NormalizeOptions = {}
 
   const subgraphByIdMap = new Map(ir.subgraphs.map((subgraph) => [subgraph.id, subgraph]));
   const titleNodeIds = new Set<string>();
+  const defaultClassStyle = ast.classDefs.default ?? ast.classDefs.DEFAULT;
 
   for (const node of ir.nodes) {
     const classes = ast.classAssignments[node.id] ?? [];
@@ -273,6 +278,10 @@ export function normalizeDiagram(ast: DiagramAst, options: NormalizeOptions = {}
   }
 
   for (const node of ir.nodes) {
+    if (defaultClassStyle) {
+      applyStyleToNode(node, defaultClassStyle);
+    }
+
     const classes = ast.classAssignments[node.id] ?? [];
     for (const className of classes) {
       applyStyleToNode(node, ast.classDefs[className]);

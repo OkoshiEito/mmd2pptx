@@ -191,6 +191,22 @@ function makeEmbedPayload(source: string, patchText?: string): string {
   ].join("\n");
 }
 
+function markerToArrowType(marker: string | undefined): string | undefined {
+  if (!marker || marker === "none") {
+    return undefined;
+  }
+  if (marker === "arrow" || marker === "triangle") {
+    return "triangle";
+  }
+  if (marker === "diamond" || marker === "openDiamond") {
+    return "diamond";
+  }
+  if (marker === "circle") {
+    return "oval";
+  }
+  return undefined;
+}
+
 interface RenderOptions {
   outputPath: string;
   sourceMmd: string;
@@ -270,12 +286,16 @@ export async function renderPptx(ir: DiagramIr, options: RenderOptions): Promise
       pt: edge.style.width,
       dash: edge.style.lineStyle === "dotted" ? "dot" : "solid",
     };
-
-    if (edge.style.arrow === "start" || edge.style.arrow === "both") {
+    const beginArrowType = markerToArrowType(edge.style.startMarker);
+    const endArrowType = markerToArrowType(edge.style.endMarker);
+    if (beginArrowType) {
+      lineOptions.beginArrowType = beginArrowType;
+    } else if (edge.style.arrow === "start" || edge.style.arrow === "both") {
       lineOptions.beginArrowType = "triangle";
     }
-
-    if (edge.style.arrow === "end" || edge.style.arrow === "both") {
+    if (endArrowType) {
+      lineOptions.endArrowType = endArrowType;
+    } else if (edge.style.arrow === "end" || edge.style.arrow === "both") {
       lineOptions.endArrowType = "triangle";
     }
 
@@ -317,11 +337,21 @@ export async function renderPptx(ir: DiagramIr, options: RenderOptions): Promise
           pt: edge.style.width,
           dash: edge.style.lineStyle === "dotted" ? "dot" : "solid",
         };
-        if (i === 0 && (edge.style.arrow === "start" || edge.style.arrow === "both")) {
-          segmentLineOptions.beginArrowType = "triangle";
+        if (i === 0) {
+          const segBegin = markerToArrowType(edge.style.startMarker);
+          if (segBegin) {
+            segmentLineOptions.beginArrowType = segBegin;
+          } else if (edge.style.arrow === "start" || edge.style.arrow === "both") {
+            segmentLineOptions.beginArrowType = "triangle";
+          }
         }
-        if (i === points.length - 2 && (edge.style.arrow === "end" || edge.style.arrow === "both")) {
-          segmentLineOptions.endArrowType = "triangle";
+        if (i === points.length - 2) {
+          const segEnd = markerToArrowType(edge.style.endMarker);
+          if (segEnd) {
+            segmentLineOptions.endArrowType = segEnd;
+          } else if (edge.style.arrow === "end" || edge.style.arrow === "both") {
+            segmentLineOptions.endArrowType = "triangle";
+          }
         }
         drawLineSegment(points[i], points[i + 1], segmentLineOptions);
       }

@@ -2,6 +2,7 @@ import type {
   ArrowType,
   DiagramAst,
   DiagramDirection,
+  EdgeMarker,
   EdgeLineStyle,
   NodeShape,
   ParsedEdge,
@@ -9,7 +10,8 @@ import type {
   ParsedSubgraph,
 } from "../types.js";
 
-const HEADER_RE = /^(flowchart|graph|stateDiagram(?:-v2)?)\b(?:\s+([A-Za-z]{2}))?/i;
+const HEADER_RE = /^(flowchart|graph|stateDiagram(?:-v2)?|classDiagram(?:-v2)?)\b(?:\s+([A-Za-z]{2}))?/i;
+const CLASS_HEADER_RE = /^classDiagram(?:-v2)?\b/i;
 const EDGE_TOKEN_RE = /(?:([A-Za-z0-9_:-]+)@)?([ox]?<?[-=.~]{2,}>?[ox]?)/giu;
 
 interface NodeExpr {
@@ -880,6 +882,674 @@ function parseEdgeStatement(line: string, lineNumber: number): { nodes: ParsedNo
   };
 }
 
+interface ClassNodeBuffer {
+  id: string;
+  label: string;
+  members: string[];
+  annotation?: string;
+  subgraphId?: string;
+}
+
+function stripQuotesOrBackticks(input: string): string {
+  const trimmed = input.trim();
+  const matched = trimmed.match(/^["'`]([\s\S]*)["'`]$/u);
+  return matched ? matched[1] : trimmed;
+}
+
+function normalizeClassId(input: string): string {
+  const stripped = stripQuotesOrBackticks(input);
+  const withoutGenerics = stripped.replace(/~[^~]+~/gu, "");
+  return withoutGenerics.trim();
+}
+
+function classDisplayName(input: string, fallbackId: string): string {
+  const stripped = stripQuotesOrBackticks(input);
+  if (!stripped) {
+    return fallbackId;
+  }
+
+  const withGenerics = stripped.replace(/~([^~]+)~/gu, "<$1>");
+  return withGenerics.trim() || fallbackId;
+}
+
+function tokenizeQuoted(input: string): string[] {
+  const tokens = input.match(/"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|`[^`]*`|\S+/gu);
+  return tokens ? [...tokens] : [];
+}
+
+function unquoteToken(input: string): string {
+  const token = input.trim();
+  if (
+    (token.startsWith('"') && token.endsWith('"')) ||
+    (token.startsWith("'") && token.endsWith("'")) ||
+    (token.startsWith("`") && token.endsWith("`"))
+  ) {
+    return token.slice(1, -1);
+  }
+  return token;
+}
+
+function splitTrailingColonLabel(input: string): { core: string; label?: string } {
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    const next = i + 1 < input.length ? input[i + 1] : "";
+    if (ch === "\\" && (inSingle || inDouble || inBacktick) && next) {
+      i += 1;
+      continue;
+    }
+
+    if (ch === "'" && !inDouble && !inBacktick) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle && !inBacktick) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (ch === "`" && !inSingle && !inDouble) {
+      inBacktick = !inBacktick;
+      continue;
+    }
+
+    if (ch === ":" && !inSingle && !inDouble && !inBacktick) {
+      return {
+        core: input.slice(0, i).trim(),
+        label: cleanLabel(input.slice(i + 1)),
+      };
+    }
+  }
+
+  return {
+    core: input.trim(),
+  };
+}
+
+function markerFromClassRelationToken(token?: string): EdgeMarker {
+  if (!token) {
+    return "none";
+  }
+  if (token === "*" ) {
+    return "diamond";
+  }
+  if (token === "o") {
+    return "openDiamond";
+  }
+  if (token === "()") {
+    return "circle";
+  }
+  if (token === "<|" || token === "|>") {
+    return "triangle";
+  }
+  if (token === "<" || token === ">") {
+    return "arrow";
+  }
+  return "none";
+}
+
+function arrowFromMarkers(startMarker: EdgeMarker, endMarker: EdgeMarker): ArrowType {
+  const hasStart = startMarker !== "none";
+  const hasEnd = endMarker !== "none";
+  if (hasStart && hasEnd) {
+    return "both";
+  }
+  if (hasStart) {
+    return "start";
+  }
+  if (hasEnd) {
+    return "end";
+  }
+  return "none";
+}
+
+function parseClassRelationOperator(
+  op: string,
+): { lineStyle: EdgeLineStyle; startMarker: EdgeMarker; endMarker: EdgeMarker; arrow: ArrowType } | null {
+  const matched = op.match(/^(<\||\|>|\*|o|<|>|\(\))?(--|\.\.)(<\||\|>|\*|o|<|>|\(\))?$/u);
+  if (!matched) {
+    return null;
+  }
+
+  const startMarker = markerFromClassRelationToken(matched[1]);
+  const endMarker = markerFromClassRelationToken(matched[3]);
+  return {
+    lineStyle: matched[2] === ".." ? "dotted" : "solid",
+    startMarker,
+    endMarker,
+    arrow: arrowFromMarkers(startMarker, endMarker),
+  };
+}
+
+function parseCssClassStatement(raw: string): { ids: string[]; classes: string[] } | null {
+  const matched = raw.match(/^cssClass\s+(.+?)\s+([A-Za-z0-9_.,:-]+)\s*;?$/iu);
+  if (!matched) {
+    return null;
+  }
+
+  const idExpr = matched[1].trim();
+  const classExpr = matched[2].trim();
+  const ids = idExpr
+    .replace(/^["']|["']$/gu, "")
+    .split(",")
+    .map((value) => normalizeClassId(value))
+    .filter(Boolean);
+  const classes = classExpr
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (ids.length === 0 || classes.length === 0) {
+    return null;
+  }
+  return { ids, classes };
+}
+
+function parseClassDeclarationStatement(raw: string): {
+  id: string;
+  label: string;
+  annotation?: string;
+  classes: string[];
+  openBlock: boolean;
+} | null {
+  let body = raw.replace(/^class\s+/iu, "").trim();
+  if (!body) {
+    return null;
+  }
+
+  if (
+    !body.includes("[") &&
+    !body.includes("{") &&
+    !body.includes(":::") &&
+    !body.includes("<<") &&
+    /^[A-Za-z0-9_.,:\/-]+\s+[A-Za-z0-9_.,:-]+$/u.test(body)
+  ) {
+    return null;
+  }
+
+  let openBlock = false;
+  if (body.endsWith("{")) {
+    openBlock = true;
+    body = body.slice(0, -1).trim();
+  }
+
+  const withClasses = extractInlineClasses(body);
+  body = withClasses.core;
+
+  let annotation: string | undefined;
+  const annotationMatch = body.match(/<<\s*([^>]+)\s*>>/u);
+  if (annotationMatch && annotationMatch.index !== undefined) {
+    annotation = cleanLabel(annotationMatch[1]);
+    body = `${body.slice(0, annotationMatch.index)}${body.slice(annotationMatch.index + annotationMatch[0].length)}`.trim();
+  }
+
+  let idToken = body;
+  let label: string | undefined;
+  let rest = "";
+  let handledBacktickId = false;
+  if (body.startsWith("`")) {
+    const closing = body.indexOf("`", 1);
+    if (closing !== -1) {
+      idToken = body.slice(0, closing + 1).trim();
+      rest = body.slice(closing + 1).trim();
+      handledBacktickId = true;
+    }
+  }
+  if (!handledBacktickId) {
+    const matched = body.match(/^([^\s\[]+)([\s\S]*)$/u);
+    if (matched) {
+      idToken = matched[1].trim();
+      rest = matched[2].trim();
+    }
+  }
+
+  const labelMatch = rest.match(/^\[(.+)\]\s*$/u);
+  if (labelMatch) {
+    label = cleanLabel(labelMatch[1]);
+  }
+
+  const id = normalizeClassId(idToken);
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    label: label || classDisplayName(idToken, id),
+    annotation,
+    classes: withClasses.classes,
+    openBlock,
+  };
+}
+
+function parseClassRelationStatement(
+  raw: string,
+  lineNumber: number,
+): { nodes: ParsedNode[]; edge: ParsedEdge } | null {
+  const split = splitTrailingColonLabel(raw);
+  const tokens = tokenizeQuoted(split.core);
+  if (tokens.length < 3) {
+    return null;
+  }
+
+  let opIndex = -1;
+  let opInfo: ReturnType<typeof parseClassRelationOperator> = null;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const parsed = parseClassRelationOperator(tokens[i]);
+    if (!parsed) {
+      continue;
+    }
+    opIndex = i;
+    opInfo = parsed;
+    break;
+  }
+
+  if (opIndex === -1 || !opInfo) {
+    return null;
+  }
+
+  const leftTokens = tokens.slice(0, opIndex);
+  const rightTokens = tokens.slice(opIndex + 1);
+  if (leftTokens.length === 0 || rightTokens.length === 0) {
+    return null;
+  }
+
+  let startLabel: string | undefined;
+  if (leftTokens.length >= 2 && /^".*"$|^'.*'$|^`.*`$/u.test(leftTokens[leftTokens.length - 1])) {
+    startLabel = cleanLabel(unquoteToken(leftTokens.pop() ?? ""));
+  }
+
+  let endLabel: string | undefined;
+  if (rightTokens.length >= 2 && /^".*"$|^'.*'$|^`.*`$/u.test(rightTokens[0])) {
+    endLabel = cleanLabel(unquoteToken(rightTokens.shift() ?? ""));
+  }
+
+  const leftExpr = leftTokens.join(" ").trim();
+  const rightExpr = rightTokens.join(" ").trim();
+  const fromId = normalizeClassId(leftExpr);
+  const toId = normalizeClassId(rightExpr);
+  if (!fromId || !toId) {
+    return null;
+  }
+
+  return {
+    nodes: [
+      {
+        id: fromId,
+        label: classDisplayName(leftExpr, fromId),
+        shape: "rect",
+        line: lineNumber,
+        raw: leftExpr,
+      },
+      {
+        id: toId,
+        label: classDisplayName(rightExpr, toId),
+        shape: "rect",
+        line: lineNumber,
+        raw: rightExpr,
+      },
+    ],
+    edge: {
+      from: fromId,
+      to: toId,
+      label: split.label,
+      startLabel,
+      endLabel,
+      startMarker: opInfo.startMarker,
+      endMarker: opInfo.endMarker,
+      style: opInfo.lineStyle,
+      arrow: opInfo.arrow,
+      line: lineNumber,
+      raw,
+    },
+  };
+}
+
+function classNodeLabel(node: ClassNodeBuffer): string {
+  const header = node.annotation ? `«${node.annotation}»\n${node.label}` : node.label;
+  if (node.members.length === 0) {
+    return header;
+  }
+
+  const attrs: string[] = [];
+  const methods: string[] = [];
+  for (const member of node.members) {
+    if (/\(.*\)/u.test(member)) {
+      methods.push(member);
+    } else {
+      attrs.push(member);
+    }
+  }
+
+  if (attrs.length > 0 && methods.length > 0) {
+    return `${header}\n${attrs.join("\n")}\n\n${methods.join("\n")}`;
+  }
+
+  return `${header}\n${node.members.join("\n")}`;
+}
+
+function parseClassDiagram(
+  lines: string[],
+  source: string,
+  title: string | undefined,
+  layoutHints: { nodeSpacing?: number; rankSpacing?: number },
+): DiagramAst {
+  const nodes: ParsedNode[] = [];
+  const edges: ParsedEdge[] = [];
+  const subgraphs: ParsedSubgraph[] = [];
+  const classDefs: Record<string, Record<string, string>> = {};
+  const classAssignments: Record<string, string[]> = {};
+  const styleOverrides: Record<string, Record<string, string>> = {};
+  const classNodeMap = new Map<string, ClassNodeBuffer>();
+  const classOrder: string[] = [];
+  const namespaceStack: string[] = [];
+  let direction: DiagramDirection = "TD";
+  let currentClassBlockId: string | null = null;
+  let noteCounter = 0;
+  let namespaceCounter = 0;
+
+  const registerClasses = (id: string, names?: string[]): void => {
+    if (!names || names.length === 0) {
+      return;
+    }
+    const current = classAssignments[id] ?? [];
+    classAssignments[id] = [...new Set([...current, ...names])];
+  };
+
+  const ensureClassNode = (id: string, label?: string): ClassNodeBuffer => {
+    const existing = classNodeMap.get(id);
+    if (existing) {
+      if (label && (existing.label === existing.id || label.length >= existing.label.length)) {
+        existing.label = label;
+      }
+      if (!existing.subgraphId && namespaceStack.length > 0) {
+        existing.subgraphId = namespaceStack[namespaceStack.length - 1];
+      }
+      return existing;
+    }
+
+    const created: ClassNodeBuffer = {
+      id,
+      label: label || id,
+      members: [],
+      subgraphId: namespaceStack[namespaceStack.length - 1],
+    };
+    classNodeMap.set(id, created);
+    classOrder.push(id);
+    return created;
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const lineNumber = i + 1;
+    const rawLine = lines[i];
+
+    const titleMatch = rawLine.match(/^\s*%%\s*title\s*:?\s*(.+?)\s*$/iu);
+    if (titleMatch && !title) {
+      title = cleanLabel(titleMatch[1]);
+    }
+
+    const initHint = parseInitDirective(rawLine);
+    if (initHint?.nodeSpacing !== undefined) {
+      layoutHints.nodeSpacing = initHint.nodeSpacing;
+    }
+    if (initHint?.rankSpacing !== undefined) {
+      layoutHints.rankSpacing = initHint.rankSpacing;
+    }
+
+    const trimmed = stripComment(rawLine).trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    if (CLASS_HEADER_RE.test(trimmed)) {
+      continue;
+    }
+
+    if (currentClassBlockId) {
+      if (trimmed === "}") {
+        currentClassBlockId = null;
+        continue;
+      }
+
+      const current = classNodeMap.get(currentClassBlockId);
+      if (!current) {
+        currentClassBlockId = null;
+        continue;
+      }
+
+      const annotationMatch = trimmed.match(/^<<\s*([^>]+)\s*>>$/u);
+      if (annotationMatch) {
+        current.annotation = cleanLabel(annotationMatch[1]);
+        continue;
+      }
+
+      current.members.push(cleanLabel(trimmed));
+      continue;
+    }
+
+    const dirMatch = trimmed.match(/^direction\s+([A-Za-z]{2})$/iu);
+    if (dirMatch) {
+      direction = toDirection(dirMatch[1]);
+      continue;
+    }
+
+    const namespaceStart = trimmed.match(/^namespace\s+(.+?)\s*\{$/iu);
+    if (namespaceStart) {
+      namespaceCounter += 1;
+      const titleText = cleanLabel(stripQuotesOrBackticks(namespaceStart[1]));
+      const idSlug = titleText
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/gu, "_")
+        .replace(/^_+|_+$/gu, "")
+        .slice(0, 40) || `ns_${namespaceCounter}`;
+      const namespaceId = `ns_${idSlug}_${namespaceCounter}`;
+      subgraphs.push({
+        id: namespaceId,
+        title: titleText || namespaceId,
+        line: lineNumber,
+      });
+      namespaceStack.push(namespaceId);
+      continue;
+    }
+
+    if (trimmed === "}") {
+      namespaceStack.pop();
+      continue;
+    }
+
+    if (/^classDef\b/i.test(trimmed)) {
+      const parsed = parseClassDefStatement(trimmed);
+      if (parsed) {
+        for (const name of parsed.names) {
+          classDefs[name] = mergeStyleMap(classDefs[name] ?? {}, parsed.styles);
+        }
+      }
+      continue;
+    }
+
+    if (/^class\b/i.test(trimmed)) {
+      const decl = parseClassDeclarationStatement(trimmed);
+      if (decl) {
+        const classNode = ensureClassNode(decl.id, decl.label);
+        if (decl.annotation) {
+          classNode.annotation = decl.annotation;
+        }
+        registerClasses(decl.id, decl.classes);
+        if (decl.openBlock) {
+          currentClassBlockId = decl.id;
+        }
+        continue;
+      }
+
+      const parsed = parseClassStatement(trimmed);
+      if (parsed) {
+        for (const id of parsed.ids) {
+          registerClasses(id, parsed.classes);
+        }
+      }
+      continue;
+    }
+
+    if (/^cssClass\b/i.test(trimmed)) {
+      const parsed = parseCssClassStatement(trimmed);
+      if (parsed) {
+        for (const id of parsed.ids) {
+          registerClasses(id, parsed.classes);
+        }
+      }
+      continue;
+    }
+
+    if (/^style\b/i.test(trimmed)) {
+      const parsed = parseStyleStatement(trimmed);
+      if (parsed) {
+        styleOverrides[parsed.id] = mergeStyleMap(styleOverrides[parsed.id] ?? {}, parsed.styles);
+      }
+      continue;
+    }
+
+    if (/^(linkStyle|click|link|callback)\b/i.test(trimmed)) {
+      continue;
+    }
+
+    const noteForMatch = trimmed.match(/^note\s+for\s+(.+?)\s+"([\s\S]+)"\s*$/iu);
+    if (noteForMatch) {
+      const targetId = normalizeClassId(noteForMatch[1]);
+      if (!targetId) {
+        continue;
+      }
+      const targetNode = ensureClassNode(targetId, classDisplayName(noteForMatch[1], targetId));
+      noteCounter += 1;
+      const noteId = `note_${noteCounter}`;
+      nodes.push({
+        id: noteId,
+        label: cleanLabel(noteForMatch[2]),
+        shape: "roundRect",
+        subgraphId: targetNode.subgraphId,
+        line: lineNumber,
+        raw: trimmed,
+      });
+      registerClasses(noteId, ["__class_note"]);
+      edges.push({
+        from: noteId,
+        to: targetId,
+        style: "dotted",
+        arrow: "none",
+        startMarker: "none",
+        endMarker: "none",
+        line: lineNumber,
+        raw: trimmed,
+      });
+      continue;
+    }
+
+    const noteMatch = trimmed.match(/^note\s+"([\s\S]+)"\s*$/iu);
+    if (noteMatch) {
+      noteCounter += 1;
+      const noteId = `note_${noteCounter}`;
+      nodes.push({
+        id: noteId,
+        label: cleanLabel(noteMatch[1]),
+        shape: "roundRect",
+        subgraphId: namespaceStack[namespaceStack.length - 1],
+        line: lineNumber,
+        raw: trimmed,
+      });
+      registerClasses(noteId, ["__class_note"]);
+      continue;
+    }
+
+    const relation = parseClassRelationStatement(trimmed, lineNumber);
+    if (relation) {
+      const [fromNode, toNode] = relation.nodes;
+      ensureClassNode(fromNode.id, fromNode.label);
+      ensureClassNode(toNode.id, toNode.label);
+      edges.push(relation.edge);
+      continue;
+    }
+
+    const memberMatch = trimmed.match(/^([^\s:][^:]*?)\s*:\s*(.+)$/u);
+    if (memberMatch) {
+      const classId = normalizeClassId(memberMatch[1]);
+      const member = cleanLabel(memberMatch[2]);
+      if (classId) {
+        const classNode = ensureClassNode(classId, classDisplayName(memberMatch[1], classId));
+        const annotationMatch = member.match(/^<<\s*([^>]+)\s*>>$/u);
+        if (annotationMatch) {
+          classNode.annotation = cleanLabel(annotationMatch[1]);
+        } else {
+          classNode.members.push(member);
+        }
+        continue;
+      }
+    }
+
+    const standaloneAnnotation = trimmed.match(/^(.+?)\s+<<\s*([^>]+)\s*>>$/u);
+    if (standaloneAnnotation) {
+      const classId = normalizeClassId(standaloneAnnotation[1]);
+      if (classId) {
+        const classNode = ensureClassNode(classId, classDisplayName(standaloneAnnotation[1], classId));
+        classNode.annotation = cleanLabel(standaloneAnnotation[2]);
+        continue;
+      }
+    }
+
+    const prefixAnnotation = trimmed.match(/^<<\s*([^>]+)\s*>>\s+(.+)$/u);
+    if (prefixAnnotation) {
+      const classId = normalizeClassId(prefixAnnotation[2]);
+      if (classId) {
+        const classNode = ensureClassNode(classId, classDisplayName(prefixAnnotation[2], classId));
+        classNode.annotation = cleanLabel(prefixAnnotation[1]);
+        continue;
+      }
+    }
+
+    const bareClass = parseNodeExpr(trimmed);
+    if (bareClass) {
+      const id = normalizeClassId(bareClass.id);
+      if (id) {
+        ensureClassNode(id, classDisplayName(bareClass.id, id));
+      }
+    }
+  }
+
+  classDefs.__class_note = mergeStyleMap(classDefs.__class_note ?? {}, {
+    fill: "#FFFDE7",
+    stroke: "#D4AF37",
+    "stroke-width": "1px",
+  });
+
+  for (const id of classOrder) {
+    const classNode = classNodeMap.get(id);
+    if (!classNode) {
+      continue;
+    }
+    nodes.push({
+      id: classNode.id,
+      label: classNodeLabel(classNode),
+      shape: "rect",
+      subgraphId: classNode.subgraphId,
+      line: 1,
+      raw: classNode.id,
+    });
+  }
+
+  return {
+    source,
+    direction,
+    title,
+    nodes,
+    edges,
+    subgraphs,
+    classDefs,
+    classAssignments,
+    styleOverrides,
+    layoutHints,
+  };
+}
+
 export function parseMermaid(source: string): DiagramAst {
   const normalizedSource = source.replace(/\r\n/g, "\n");
   const allLines = normalizedSource.split("\n");
@@ -900,6 +1570,14 @@ export function parseMermaid(source: string): DiagramAst {
     if (closing !== -1) {
       lines = [...lines.slice(0, firstNonEmpty), ...lines.slice(closing + 1)];
     }
+  }
+
+  const classHeaderLine = lines.find((line) => {
+    const trimmed = stripComment(line).trim();
+    return CLASS_HEADER_RE.test(trimmed);
+  });
+  if (classHeaderLine) {
+    return parseClassDiagram(lines, source, undefined, {});
   }
 
   const logicalLines = buildLogicalLines(lines);

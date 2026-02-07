@@ -23,6 +23,8 @@ export const DEFAULT_EDGE_STYLE: EdgeStyle = {
   width: 1.3,
   lineStyle: "solid",
   arrow: "end",
+  startMarker: "none",
+  endMarker: "arrow",
   fontSize: 11,
 };
 

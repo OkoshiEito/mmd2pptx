@@ -1,0 +1,89 @@
+%% title: class syntax coverage
+classDiagram
+  direction LR
+
+  classDef core fill:#E3F2FD,stroke:#64B5F6,stroke-width:1px
+  classDef impl fill:#E8F5E9,stroke:#81C784,stroke-width:1px
+  classDef iface fill:#FFF3E0,stroke:#FFB74D,stroke-width:1px
+  classDef note fill:#FFFDE7,stroke:#D4AF37,stroke-width:1px
+
+  namespace Domain {
+    class Animal {
+      +int age
+      +String name
+      +eat(food)
+      +sleep(hours)
+    }
+
+    class Dog {
+      +bark()
+    }
+
+    class Cat {
+      +meow()
+    }
+
+    class PetOwner["Pet Owner"]
+    class Box~T~ {
+      +T value
+      +get() T
+    }
+  }
+
+  namespace Infra {
+    class Repository <<Interface>> {
+      +save(entity)
+      +findById(id)
+    }
+
+    class SqlRepository {
+      +save(entity)
+      +findById(id)
+    }
+
+    class RedisCache
+  }
+
+  class Ticket {
+    +String id
+    +String status
+  }
+
+  class Customer
+  class OrderService:::core
+  class PaymentGateway:::iface
+  class StripeGateway:::impl
+  class EventBus
+  class Logger
+  class LegacyAdapter
+
+  class Customer {
+    +String customerId
+    +placeOrder()
+  }
+
+  Customer : +String email
+  Customer : +cancelOrder(orderId)
+  Repository : <<Interface>>
+
+  Animal <|-- Dog : inherits
+  Animal <|-- Cat : inherits
+  Repository <|.. SqlRepository : realizes
+  Customer "1" --> "*" Ticket : places
+  OrderService --> PaymentGateway : calls
+  StripeGateway ..> PaymentGateway : dependency
+  OrderService *-- EventBus : owns
+  OrderService o-- Logger : references
+  OrderService -- LegacyAdapter : associates
+  RedisCache .. EventBus : sync
+  Box~T~ --> Ticket : wraps
+
+  PaymentGateway ()-- StripeGateway : lollipop-left
+  Repository --() SqlRepository : lollipop-right
+
+  note "Global note: classDiagram syntax coverage"
+  note for OrderService "OrderService coordinates use-cases"
+
+  class Customer,Ticket core
+  cssClass "Repository,PaymentGateway" iface
+  style LegacyAdapter fill:#F3E5F5,stroke:#BA68C8,stroke-width:1px

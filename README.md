@@ -6,7 +6,7 @@
 
 - `Parse -> Normalize -> Measure -> Layout -> Render -> Embed` のフェーズ分割
 - 中間表現 `IR` を JSON で出力可能
-- flowchart/graph (MVP) を自前解析
+- flowchart/graph/classDiagram を自前解析
 - sequenceDiagram を python レンダラで直接変換
 - patch YAML でノード位置/サイズ・レイアウトを上書き
 - 生成した pptx に `元mmd + patch` を埋め込み
@@ -38,6 +38,9 @@ node dist/cli.js build samples/flow.mmd --renderer js -o samples/flow.pptx
 
 # sequenceDiagram (python renderer)
 node dist/cli.js build samples/sequence-all-expr.mmd --renderer python -o samples/sequence-all-expr.pptx
+
+# classDiagram (python renderer)
+node dist/cli.js build samples/class_syntax_coverage.mmd --renderer python -o samples/class_syntax_coverage.pptx
 
 # IRを出力
 node dist/cli.js build samples/flow.mmd --ir-out samples/flow.ir.json -o samples/flow.pptx
@@ -87,6 +90,7 @@ subgraphs:
 ## 現在の対応範囲 (MVP)
 
 - `flowchart` / `graph`
+- `classDiagram`（関係マーカー・多重度ラベル・namespace・note・classDef/class/style/cssClass）
 - `sequenceDiagram`（python renderer）
 - ノード形状: 四角/角丸/円/菱形/平行四辺形
 - エッジ: 実線/点線/太線、矢印、ラベル (`|label|`)
@@ -95,7 +99,7 @@ subgraphs:
 ## 既知の制約
 
 - `sequenceDiagram` は IR 非経由で直接レンダリング（`--ir-out` はダミー情報のみ）
-- `class` など flowchart/sequence 以外の図種は未対応
+- `stateDiagram` など未対応図種は順次対応予定
 - エッジラベルは `-->|label|` 形式を優先サポート
 - `python` レンダラではコネクタ接続、`js` レンダラでは線分描画
 

@@ -363,20 +363,43 @@ def choose_self_loop_geometry(
     return src_side, dst_side, clamped_points, (lx, ly)
 
 
-def set_arrowheads(connector: Any, arrow: str) -> None:
+def marker_to_ooxml(marker: str | None) -> str | None:
+    token = (marker or "").strip()
+    if token in {"none", ""}:
+        return None
+    if token in {"arrow", "triangle"}:
+        return "triangle"
+    if token in {"diamond", "openDiamond"}:
+        return "diamond"
+    if token == "circle":
+        return "oval"
+    return None
+
+
+def set_edge_markers(connector: Any, style: dict[str, Any]) -> None:
     ln = connector._element.spPr.get_or_add_ln()
     for child in list(ln):
         if child.tag in {qn("a:headEnd"), qn("a:tailEnd")}:
             ln.remove(child)
 
-    if arrow in {"start", "both"}:
+    start_marker = marker_to_ooxml(style.get("startMarker"))
+    end_marker = marker_to_ooxml(style.get("endMarker"))
+
+    if start_marker is None and end_marker is None:
+        arrow = str(style.get("arrow", "none"))
+        if arrow in {"start", "both"}:
+            start_marker = "triangle"
+        if arrow in {"end", "both"}:
+            end_marker = "triangle"
+
+    if start_marker:
         head = OxmlElement("a:headEnd")
-        head.set("type", "triangle")
+        head.set("type", start_marker)
         ln.append(head)
 
-    if arrow in {"end", "both"}:
+    if end_marker:
         tail = OxmlElement("a:tailEnd")
-        tail.set("type", "triangle")
+        tail.set("type", end_marker)
         ln.append(tail)
 
 
@@ -1381,11 +1404,14 @@ def render(
                 segments.append(segment)
 
             if segments:
-                arrow = style.get("arrow", "end")
-                if arrow in {"start", "both"}:
-                    set_arrowheads(segments[0], "start")
-                if arrow in {"end", "both"}:
-                    set_arrowheads(segments[-1], "end")
+                start_style = dict(style)
+                start_style["endMarker"] = "none"
+                start_style["arrow"] = "start"
+                end_style = dict(style)
+                end_style["startMarker"] = "none"
+                end_style["arrow"] = "end"
+                set_edge_markers(segments[0], start_style)
+                set_edge_markers(segments[-1], end_style)
                 connector = segments[-1]
                 sx, sy = loop_points[0]
                 dx, dy = loop_points[-1]
@@ -1408,7 +1434,7 @@ def render(
                 pass
 
             apply_line_style(connector.line, style)
-            set_arrowheads(connector, style.get("arrow", "end"))
+            set_edge_markers(connector, style)
             sx = emu_to_in(float(connector.begin_x))
             sy = emu_to_in(float(connector.begin_y))
             dx = emu_to_in(float(connector.end_x))
@@ -1420,6 +1446,8 @@ def render(
                 "connector": connector,
                 "style": style,
                 "label": edge.get("label"),
+                "startLabel": edge.get("startLabel"),
+                "endLabel": edge.get("endLabel"),
                 "sx": sx,
                 "sy": sy,
                 "dx": dx,
@@ -1535,6 +1563,63 @@ def render(
         )
 
         placed_label_boxes.append((lx - bw / 2.0, ly - bh / 2.0, bw, bh))
+
+    for item in edge_items:
+        for side in ("start", "end"):
+            endpoint_text_raw = item["startLabel"] if side == "start" else item["endLabel"]
+            endpoint_text = str(endpoint_text_raw).strip() if endpoint_text_raw is not None else ""
+            if endpoint_text == "":
+                continue
+
+            sx = float(item["sx"])
+            sy = float(item["sy"])
+            dx = float(item["dx"])
+            dy = float(item["dy"])
+            vx = dx - sx
+            vy = dy - sy
+            length = (vx * vx + vy * vy) ** 0.5
+            if length < 1e-6:
+                continue
+
+            tx = vx / length
+            ty = vy / length
+            nx = -ty
+            ny = tx
+            t = 0.14 if side == "start" else 0.86
+            base_x = sx + vx * t
+            base_y = sy + vy * t
+            offset = 0.11
+            cx = base_x + nx * offset
+            cy = base_y + ny * offset
+
+            label_font = scaled_font_size(float(item["style"].get("fontSize", 10)), scale)
+            bw, bh = estimate_label_box(endpoint_text, max(7.0, label_font - 0.8))
+            cx = clampf(cx, 0.04 + bw / 2.0, slide_w - 0.04 - bw / 2.0)
+            cy = clampf(cy, 0.04 + bh / 2.0, slide_h - 0.04 - bh / 2.0)
+
+            box = item["group"].shapes.add_textbox(Inches(cx - bw / 2.0), Inches(cy - bh / 2.0), Inches(bw), Inches(bh))
+            box.fill.background()
+            box.line.fill.background()
+
+            tf = box.text_frame
+            tf.clear()
+            tf.word_wrap = False
+            tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+            tf.margin_left = Inches(0.01)
+            tf.margin_right = Inches(0.01)
+            tf.margin_top = Inches(0.0)
+            tf.margin_bottom = Inches(0.0)
+
+            render_rich_text(
+                tf,
+                endpoint_text,
+                font_family=font_family,
+                font_size=max(7.0, label_font - 0.8),
+                color=item["style"].get("color", "1E293B"),
+                bold=False,
+                align="center",
+            )
+            placed_label_boxes.append((cx - bw / 2.0, cy - bh / 2.0, bw, bh))
 
     title_text = str(ir.get("meta", {}).get("title", "")).strip()
     if title_text:
