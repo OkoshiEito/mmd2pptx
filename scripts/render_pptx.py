@@ -415,12 +415,14 @@ def marker_to_ooxml(marker: str | None) -> str | None:
     token = (marker or "").strip()
     if token in {"none", ""}:
         return None
-    if token in {"arrow", "triangle"}:
+    if token == "arrow":
+        return "arrow"
+    if token == "triangle":
         return "triangle"
-    if token in {"diamond", "openDiamond"}:
+    if token == "diamond":
         return "diamond"
-    if token == "circle":
-        return "oval"
+    if token in {"openDiamond", "circle"}:
+        return None
     return None
 
 
@@ -433,7 +435,11 @@ def set_edge_markers(connector: Any, style: dict[str, Any]) -> None:
     start_marker = marker_to_ooxml(style.get("startMarker"))
     end_marker = marker_to_ooxml(style.get("endMarker"))
 
-    if start_marker is None and end_marker is None:
+    start_marker_raw = str(style.get("startMarker", "")).strip()
+    end_marker_raw = str(style.get("endMarker", "")).strip()
+    has_explicit_markers = start_marker_raw != "" or end_marker_raw != ""
+
+    if start_marker is None and end_marker is None and not has_explicit_markers:
         arrow = str(style.get("arrow", "none"))
         if arrow in {"start", "both"}:
             start_marker = "triangle"
@@ -449,6 +455,54 @@ def set_edge_markers(connector: Any, style: dict[str, Any]) -> None:
         tail = OxmlElement("a:tailEnd")
         tail.set("type", end_marker)
         ln.append(tail)
+
+
+def add_endpoint_symbol(
+    group: Any,
+    marker: str,
+    *,
+    at_start: bool,
+    sx: float,
+    sy: float,
+    dx: float,
+    dy: float,
+    color: str,
+) -> None:
+    marker_type = (marker or "").strip()
+    if marker_type not in {"openDiamond", "circle"}:
+        return
+
+    vx = dx - sx
+    vy = dy - sy
+    length = (vx * vx + vy * vy) ** 0.5
+    if length < 1e-6:
+        return
+
+    tx = vx / length
+    ty = vy / length
+    if at_start:
+        anchor_x = sx
+        anchor_y = sy
+        ux = tx
+        uy = ty
+    else:
+        anchor_x = dx
+        anchor_y = dy
+        ux = -tx
+        uy = -ty
+
+    size = 0.12 if marker_type == "openDiamond" else 0.11
+    cx = anchor_x + ux * (size * 0.42)
+    cy = anchor_y + uy * (size * 0.42)
+    left = cx - size / 2.0
+    top = cy - size / 2.0
+
+    shape_kind = MSO_SHAPE.DIAMOND if marker_type == "openDiamond" else MSO_SHAPE.OVAL
+    symbol = group.shapes.add_shape(shape_kind, Inches(left), Inches(top), Inches(size), Inches(size))
+    symbol.fill.solid()
+    symbol.fill.fore_color.rgb = RGBColor(255, 255, 255)
+    symbol.line.color.rgb = to_rgb(color)
+    symbol.line.width = Pt(1.0)
 
 
 def apply_line_style(line: Any, style: dict[str, Any]) -> None:
@@ -1574,6 +1628,31 @@ def render(
                 sy = emu_to_in(float(connector.begin_y))
                 dx = emu_to_in(float(connector.end_x))
                 dy = emu_to_in(float(connector.end_y))
+
+        start_marker_name = str(style.get("startMarker", "")).strip()
+        end_marker_name = str(style.get("endMarker", "")).strip()
+        if start_marker_name in {"openDiamond", "circle"}:
+            add_endpoint_symbol(
+                edge_group,
+                start_marker_name,
+                at_start=True,
+                sx=sx,
+                sy=sy,
+                dx=dx,
+                dy=dy,
+                color=str(style.get("color", "1E293B")),
+            )
+        if end_marker_name in {"openDiamond", "circle"}:
+            add_endpoint_symbol(
+                edge_group,
+                end_marker_name,
+                at_start=False,
+                sx=sx,
+                sy=sy,
+                dx=dx,
+                dy=dy,
+                color=str(style.get("color", "1E293B")),
+            )
 
         edge_items.append(
             {
