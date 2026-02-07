@@ -9,6 +9,7 @@ interface LayoutOptions {
 interface LayoutState {
   nodePositions: Map<string, { x: number; y: number }>;
   edgeRoutes: Map<string, { points: Point[]; labelPosition?: Point }>;
+  edgeSides: Map<string, { startSide?: EdgeSide; endSide?: EdgeSide }>;
   subgraphBounds: Map<string, { x: number; y: number; width: number; height: number }>;
   bounds: DiagramIr["bounds"];
 }
@@ -1156,6 +1157,208 @@ function rebuildEdgeRoutesFromSideAnchors(ir: DiagramIr): void {
   }
 }
 
+interface EdgeSegmentRef {
+  edgeId: string;
+  fromId: string;
+  toId: string;
+  segment: Segment;
+}
+
+function polylineLength(points: Point[]): number {
+  if (points.length < 2) {
+    return 0;
+  }
+
+  let total = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    total += Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+  }
+  return total;
+}
+
+function collectEdgeSegments(ir: DiagramIr): EdgeSegmentRef[] {
+  const out: EdgeSegmentRef[] = [];
+  for (const edge of ir.edges) {
+    if (!edge.points || edge.points.length < 2) {
+      continue;
+    }
+
+    for (let i = 0; i < edge.points.length - 1; i += 1) {
+      const p0 = edge.points[i];
+      const p1 = edge.points[i + 1];
+      if (Math.hypot(p1.x - p0.x, p1.y - p0.y) < 1e-3) {
+        continue;
+      }
+      out.push({
+        edgeId: edge.id,
+        fromId: edge.from,
+        toId: edge.to,
+        segment: {
+          x1: p0.x,
+          y1: p0.y,
+          x2: p1.x,
+          y2: p1.y,
+        },
+      });
+    }
+  }
+  return out;
+}
+
+function pointInExpandedNode(point: Point, node: DiagramIr["nodes"][number], padding: number): boolean {
+  return (
+    point.x >= node.x - padding &&
+    point.x <= node.x + node.width + padding &&
+    point.y >= node.y - padding &&
+    point.y <= node.y + node.height + padding
+  );
+}
+
+function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir): number {
+  const nonJunctionNodes = ir.nodes.filter((node) => !node.isJunction);
+  let nodeOverlapPenalty = 0;
+  const overlapGap = Math.max(6, Math.min(20, ir.config.layout.nodesep * 0.18));
+  for (let i = 0; i < nonJunctionNodes.length; i += 1) {
+    for (let j = i + 1; j < nonJunctionNodes.length; j += 1) {
+      nodeOverlapPenalty += expandedOverlapArea(nonJunctionNodes[i], nonJunctionNodes[j], overlapGap);
+    }
+  }
+
+  const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
+  let edgeLengthPenalty = 0;
+  let bendPenalty = 0;
+  let backwardPenalty = 0;
+  let edgeNodePenalty = 0;
+
+  for (const edge of ir.edges) {
+    if (!edge.points || edge.points.length < 2) {
+      continue;
+    }
+    edgeLengthPenalty += polylineLength(edge.points);
+    bendPenalty += Math.max(0, edge.points.length - 2);
+
+    const fromNode = nodeById.get(edge.from);
+    const toNode = nodeById.get(edge.to);
+    if (fromNode && toNode && fromNode.id !== toNode.id) {
+      backwardPenalty += directionalPenalty(nodeCenter(fromNode), nodeCenter(toNode), rankdir);
+    }
+
+    for (let i = 0; i < edge.points.length - 1; i += 1) {
+      const p0 = edge.points[i];
+      const p1 = edge.points[i + 1];
+      const mid: Point = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+      for (const node of nonJunctionNodes) {
+        if (node.id === edge.from || node.id === edge.to) {
+          continue;
+        }
+        if (pointInExpandedNode(mid, node, 4)) {
+          edgeNodePenalty += 1;
+          break;
+        }
+      }
+    }
+  }
+
+  const segments = collectEdgeSegments(ir);
+  let crossingPenalty = 0;
+  for (let i = 0; i < segments.length; i += 1) {
+    for (let j = i + 1; j < segments.length; j += 1) {
+      const a = segments[i];
+      const b = segments[j];
+      if (
+        a.fromId === b.fromId ||
+        a.fromId === b.toId ||
+        a.toId === b.fromId ||
+        a.toId === b.toId ||
+        a.edgeId === b.edgeId
+      ) {
+        continue;
+      }
+      if (segmentsCross(a.segment, b.segment)) {
+        crossingPenalty += 1;
+      }
+    }
+  }
+
+  const spreadPenalty = ir.bounds.width * 0.024 + ir.bounds.height * 0.024;
+
+  return (
+    nodeOverlapPenalty * 9.2 +
+    crossingPenalty * 1280 +
+    edgeNodePenalty * 620 +
+    backwardPenalty * 4.4 +
+    edgeLengthPenalty * 0.11 +
+    bendPenalty * 22 +
+    spreadPenalty
+  );
+}
+
+function hashString32(text: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function deterministicNoise(nodeId: string, seed: number, salt: number): number {
+  const hash = hashString32(`${seed}:${salt}:${nodeId}`);
+  return ((hash % 20001) / 10000) - 1;
+}
+
+function applyDeterministicJitter(ir: DiagramIr, pinnedNodeIds: Set<string>, rankdir: Rankdir, seed: number): void {
+  const movable = ir.nodes.filter((node) => !node.isJunction && !pinnedNodeIds.has(node.id));
+  if (movable.length === 0) {
+    return;
+  }
+
+  const baseAmplitude = clamp(ir.config.layout.nodesep * 0.24, 7, 36);
+  const minorAmplitude = clamp(baseAmplitude * 0.58, 4, 20);
+  for (const node of movable) {
+    const nMain = deterministicNoise(node.id, seed, 17);
+    const nMinor = deterministicNoise(node.id, seed, 53);
+
+    if (rankdir === "TB" || rankdir === "BT") {
+      node.x += nMain * baseAmplitude;
+      node.y += nMinor * minorAmplitude;
+    } else {
+      node.x += nMinor * minorAmplitude;
+      node.y += nMain * baseAmplitude;
+    }
+  }
+}
+
+function optimizeLayoutWithRestarts(ir: DiagramIr, rankdir: Rankdir, pinnedNodeIds: Set<string>): void {
+  const baseState = captureLayoutState(ir);
+  const candidateCount = clamp(Math.round(3 + Math.sqrt(Math.max(1, ir.nodes.length)) * 0.8), 3, 10);
+
+  let bestState = captureLayoutState(ir);
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (let candidate = 0; candidate < candidateCount; candidate += 1) {
+    restoreLayoutState(ir, baseState);
+
+    if (candidate > 0) {
+      applyDeterministicJitter(ir, pinnedNodeIds, rankdir, candidate);
+    }
+
+    optimizeNodePlacement(ir, rankdir, pinnedNodeIds);
+    inferEdgeSideHints(ir, rankdir);
+    rebuildEdgeRoutesFromSideAnchors(ir);
+    recomputeSubgraphBounds(ir);
+    recomputeBounds(ir);
+
+    const score = scoreLayoutQuality(ir, rankdir);
+    if (score + 1e-6 < bestScore) {
+      bestScore = score;
+      bestState = captureLayoutState(ir);
+    }
+  }
+
+  restoreLayoutState(ir, bestState);
+}
+
 function applyLayout(ir: DiagramIr): void {
   const graph = new dagre.graphlib.Graph({ multigraph: true, compound: true });
   const subgraphIds = new Set(ir.subgraphs.map((subgraph) => subgraph.id));
@@ -1280,11 +1483,9 @@ function applyLayout(ir: DiagramIr): void {
     node.y = layoutNode.y - node.height / 2;
   }
 
+  const rankdir = toRankdir(ir.meta.direction);
   const movedByJunction = enforceJunctionSidePlacement(ir);
-  optimizeNodePlacement(ir, toRankdir(ir.meta.direction), movedByJunction);
-
-  inferEdgeSideHints(ir, toRankdir(ir.meta.direction));
-  rebuildEdgeRoutesFromSideAnchors(ir);
+  optimizeLayoutWithRestarts(ir, rankdir, movedByJunction);
 
   recomputeSubgraphBounds(ir);
   recomputeBounds(ir);
@@ -1303,6 +1504,15 @@ function captureLayoutState(ir: DiagramIr): LayoutState {
         {
           points: edge.points.map((point) => ({ x: point.x, y: point.y })),
           labelPosition: edge.labelPosition ? { ...edge.labelPosition } : undefined,
+        },
+      ]),
+    ),
+    edgeSides: new Map(
+      ir.edges.map((edge) => [
+        edge.id,
+        {
+          startSide: edge.style.startSide,
+          endSide: edge.style.endSide,
         },
       ]),
     ),
@@ -1333,11 +1543,15 @@ function restoreLayoutState(ir: DiagramIr, state: LayoutState): void {
 
   for (const edge of ir.edges) {
     const route = state.edgeRoutes.get(edge.id);
-    if (!route) {
-      continue;
+    const sides = state.edgeSides.get(edge.id);
+    if (route) {
+      edge.points = route.points.map((point) => ({ ...point }));
+      edge.labelPosition = route.labelPosition ? { ...route.labelPosition } : undefined;
     }
-    edge.points = route.points.map((point) => ({ ...point }));
-    edge.labelPosition = route.labelPosition ? { ...route.labelPosition } : undefined;
+    if (sides) {
+      edge.style.startSide = sides.startSide;
+      edge.style.endSide = sides.endSide;
+    }
   }
 
   for (const subgraph of ir.subgraphs) {
