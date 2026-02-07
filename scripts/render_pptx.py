@@ -1670,8 +1670,56 @@ def render(
 
         node_id = str(node.get("id", "")).strip()
         icon_path = node_icon_map.get(node_id)
-        if icon_path is not None and display_label:
-            display_label = f"\n{display_label}"
+        if icon_path is not None and shape_name not in {"forkBar", "filledCircle", "smallCircle", "framedCircle"}:
+            # Render icon nodes as one grouped object:
+            # transparent anchor (for connectors) + large icon + label below.
+            node_group = slide.shapes.add_group_shape()
+            anchor = node_group.shapes.add_shape(
+                MSO_SHAPE.RECTANGLE,
+                Inches(x),
+                Inches(y),
+                Inches(max(w, 0.05)),
+                Inches(max(h, 0.05)),
+            )
+            anchor.fill.background()
+            anchor.line.fill.background()
+
+            label_band_h = clampf(max(0.30, h * 0.30), 0.28, max(0.40, h * 0.48))
+            icon_area_h = max(0.10, h - label_band_h - 0.05)
+            icon_size = clampf(min(w * 0.82, icon_area_h * 0.90), 0.22, min(1.30, max(0.22, w - 0.08)))
+            ix = x + (w - icon_size) / 2.0
+            iy = y + max(0.02, (icon_area_h - icon_size) / 2.0 + 0.02)
+
+            try:
+                node_group.shapes.add_picture(str(icon_path), Inches(ix), Inches(iy), Inches(icon_size), Inches(icon_size))
+            except Exception:
+                # Fallback to default node rendering when icon drawing fails.
+                pass
+
+            if display_label:
+                tx = x + 0.03
+                tw = max(0.10, w - 0.06)
+                th = max(0.20, label_band_h - 0.04)
+                ty = y + h - th - 0.02
+                label_box = node_group.shapes.add_textbox(Inches(tx), Inches(ty), Inches(tw), Inches(th))
+                label_box.fill.background()
+                label_box.line.fill.background()
+                set_shape_text(
+                    label_box,
+                    display_label,
+                    font_family=font_family,
+                    font_size=scaled_font_size(float(style.get("fontSize", 14)), scale),
+                    color=style.get("text", "0F172A"),
+                    bold=bool(style.get("bold", False)),
+                    align="center",
+                    vertical="top",
+                    auto_fit=True,
+                )
+
+            node_shape_map[node["id"]] = anchor
+            node_box_map[node["id"]] = (x, y, w, h)
+            obstacle_boxes.append((x, y, w, h))
+            continue
 
         set_shape_text(
             shape,
@@ -1683,15 +1731,6 @@ def render(
             align="center",
             vertical="middle",
         )
-
-        if icon_path is not None and shape_name not in {"forkBar", "filledCircle", "smallCircle", "framedCircle"}:
-            icon_size = clampf(min(w, h) * 0.24, 0.14, 0.32)
-            ix = clampf(x + 0.06, x + 0.02, x + max(0.02, w - icon_size - 0.02))
-            iy = clampf(y + 0.05, y + 0.02, y + max(0.02, h - icon_size - 0.02))
-            try:
-                slide.shapes.add_picture(str(icon_path), Inches(ix), Inches(iy), Inches(icon_size), Inches(icon_size))
-            except Exception:
-                pass
 
         node_shape_map[node["id"]] = shape
         node_box_map[node["id"]] = (x, y, w, h)
