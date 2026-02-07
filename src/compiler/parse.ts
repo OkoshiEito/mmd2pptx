@@ -16,6 +16,7 @@ interface NodeExpr {
   id: string;
   label?: string;
   shape?: NodeShape;
+  classes?: string[];
 }
 
 function toDirection(input?: string): DiagramDirection {
@@ -114,6 +115,26 @@ function normalizeShapeLabel(shape: NodeShape, label: string): string {
   }
 
   return label;
+}
+
+function extractInlineClasses(raw: string): { core: string; classes: string[] } {
+  let core = raw.trim();
+  const classes: string[] = [];
+  const suffixRe = /:::([A-Za-z0-9_:-]+)\s*$/u;
+
+  while (true) {
+    const matched = core.match(suffixRe);
+    if (!matched || matched.index === undefined) {
+      break;
+    }
+    classes.unshift(matched[1]);
+    core = core.slice(0, matched.index).trimEnd();
+  }
+
+  return {
+    core,
+    classes,
+  };
 }
 
 function splitStatements(line: string): string[] {
@@ -232,7 +253,8 @@ function buildLogicalLines(lines: string[]): Array<{ text: string; lineNumber: n
 }
 
 function parseNodeExpr(raw: string): NodeExpr | null {
-  const token = raw.trim();
+  const extracted = extractInlineClasses(raw);
+  const token = extracted.core;
   if (!token) {
     return null;
   }
@@ -319,6 +341,7 @@ function parseNodeExpr(raw: string): NodeExpr | null {
       id,
       label,
       shape,
+      classes: extracted.classes,
     };
   }
 
@@ -348,6 +371,7 @@ function parseNodeExpr(raw: string): NodeExpr | null {
       id,
       label,
       shape,
+      classes: extracted.classes,
     };
   }
 
@@ -359,6 +383,7 @@ function parseNodeExpr(raw: string): NodeExpr | null {
   return {
     id: plain[1],
     label: plain[1],
+    classes: extracted.classes,
   };
 }
 
@@ -688,6 +713,7 @@ function parseNodeGroup(raw: string, lineNumber: number): ParsedNode[] | null {
       id: parsed.id,
       label: parsed.label,
       shape: parsed.shape,
+      inlineClasses: parsed.classes,
       line: lineNumber,
       raw: part,
     });
@@ -882,6 +908,15 @@ export function parseMermaid(source: string): DiagramAst {
   const layoutHints: { nodeSpacing?: number; rankSpacing?: number } = {};
 
   const subgraphStack: string[] = [];
+  const registerClasses = (id: string, names?: string[]): void => {
+    if (!Array.isArray(names) || names.length === 0) {
+      return;
+    }
+
+    const current = classAssignments[id] ?? [];
+    const merged = [...new Set([...current, ...names])];
+    classAssignments[id] = merged;
+  };
 
   for (const logical of logicalLines) {
     const lineNumber = logical.lineNumber;
@@ -948,8 +983,7 @@ export function parseMermaid(source: string): DiagramAst {
         const parsed = parseClassStatement(trimmed);
         if (parsed) {
           for (const id of parsed.ids) {
-            const current = classAssignments[id] ?? [];
-            classAssignments[id] = [...current, ...parsed.classes];
+            registerClasses(id, parsed.classes);
           }
         }
         continue;
@@ -975,6 +1009,7 @@ export function parseMermaid(source: string): DiagramAst {
       if (edgeParse) {
         for (const node of edgeParse.nodes) {
           node.subgraphId = subgraphStack[subgraphStack.length - 1];
+          registerClasses(node.id, node.inlineClasses);
           nodes.push(node);
         }
         edges.push(...edgeParse.edges);
@@ -983,10 +1018,12 @@ export function parseMermaid(source: string): DiagramAst {
 
       const nodeExpr = parseNodeExpr(trimmed);
       if (nodeExpr) {
+        registerClasses(nodeExpr.id, nodeExpr.classes);
         nodes.push({
           id: nodeExpr.id,
           label: nodeExpr.label,
           shape: nodeExpr.shape,
+          inlineClasses: nodeExpr.classes,
           subgraphId: subgraphStack[subgraphStack.length - 1],
           line: lineNumber,
           raw: trimmed,

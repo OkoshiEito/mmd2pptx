@@ -61,6 +61,7 @@ export interface ParsedNode {
   label?: string;
   shape?: NodeShape;
   subgraphId?: string;
+  inlineClasses?: string[];
   line: number;
   raw: string;
 }
