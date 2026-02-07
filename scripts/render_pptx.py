@@ -570,7 +570,8 @@ def lane_offsets(count: int, span_px: float) -> list[float]:
     if usable_span <= 1e-6:
         step = 0.0
     else:
-        step = min(15.0, max(6.0, usable_span / max(1, count)))
+        # Spread multi-edge lanes a bit wider to reduce local line congestion.
+        step = min(19.0, max(7.0, usable_span / max(1, count)))
 
     center = (count - 1) / 2.0
     return [(idx - center) * step for idx in range(count)]

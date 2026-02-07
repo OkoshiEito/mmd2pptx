@@ -1338,6 +1338,212 @@ function overlapSize(
   };
 }
 
+function rectFromNodes(nodes: DiagramIr["nodes"]): { x: number; y: number; width: number; height: number } | undefined {
+  if (nodes.length === 0) {
+    return undefined;
+  }
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const node of nodes) {
+    minX = Math.min(minX, node.x);
+    minY = Math.min(minY, node.y);
+    maxX = Math.max(maxX, node.x + node.width);
+    maxY = Math.max(maxY, node.y + node.height);
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
+function compactDetachedLegendSubgraphs(ir: DiagramIr, layoutConfig: LayoutConfig): boolean {
+  if (ir.subgraphs.length === 0) {
+    return false;
+  }
+
+  const subgraphById = new Map(ir.subgraphs.map((subgraph) => [subgraph.id, subgraph]));
+  const topLevelSubgraphs = ir.subgraphs.filter(
+    (subgraph) => !subgraph.parentId || !subgraphById.has(subgraph.parentId) || subgraph.parentId === subgraph.id,
+  );
+  if (topLevelSubgraphs.length === 0) {
+    return false;
+  }
+
+  const legendKeyword = /(?:\blegend\b|凡例|図の読み方)/i;
+  const legendIdPattern = /(?:^|[_-])legend(?:$|[_-])/i;
+  const legendTopLevel = topLevelSubgraphs.filter((subgraph) => {
+    const id = String(subgraph.id ?? "");
+    const title = String(subgraph.title ?? "");
+    return legendIdPattern.test(id) || legendKeyword.test(title);
+  });
+  if (legendTopLevel.length === 0) {
+    return false;
+  }
+
+  const topMembers = buildTopLevelSubgraphMembers(ir);
+  const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
+  const nonJunctionNodes = ir.nodes.filter((node) => !node.isJunction);
+  let moved = false;
+
+  for (const legend of legendTopLevel) {
+    const memberIds = topMembers.get(legend.id);
+    if (!memberIds || memberIds.size === 0) {
+      continue;
+    }
+
+    const memberSet = new Set(memberIds);
+    const hasExternalEdge = ir.edges.some((edge) => {
+      const fromInside = memberSet.has(edge.from);
+      const toInside = memberSet.has(edge.to);
+      return (fromInside && !toInside) || (!fromInside && toInside);
+    });
+    if (hasExternalEdge) {
+      continue;
+    }
+
+    const memberNodes = [...memberSet]
+      .map((id) => nodeById.get(id))
+      .filter((node): node is DiagramIr["nodes"][number] => Boolean(node) && !node!.isJunction);
+    if (memberNodes.length === 0) {
+      continue;
+    }
+
+    // Guardrail: treat as legend only when an explicit legend signature exists.
+    // This avoids accidentally compacting unrelated detached clusters.
+    const legendNodeCount = memberNodes.filter((node) => /^(lg[_-]|legend[_-])/i.test(String(node.id))).length;
+    const legendNodeRatio = legendNodeCount / Math.max(1, memberNodes.length);
+    if (legendNodeRatio < 0.5) {
+      continue;
+    }
+
+    // 1) Compact detached legend items into a tight vertical stack.
+    const sorted = [...memberNodes].sort((a, b) => {
+      if (Math.abs(a.y - b.y) > 1e-6) {
+        return a.y - b.y;
+      }
+      if (Math.abs(a.x - b.x) > 1e-6) {
+        return a.x - b.x;
+      }
+      return a.id.localeCompare(b.id);
+    });
+    const centerX =
+      sorted.reduce((sum, node) => sum + node.x + node.width / 2, 0) / Math.max(1, sorted.length);
+    let cursorY = Math.min(...sorted.map((node) => node.y));
+    const compactGap = clamp(layoutConfig.ranksep * 0.14, 14, 34);
+
+    for (const node of sorted) {
+      const nextX = centerX - node.width / 2;
+      const nextY = cursorY;
+      if (Math.abs(nextX - node.x) > 0.01 || Math.abs(nextY - node.y) > 0.01) {
+        node.x = nextX;
+        node.y = nextY;
+        moved = true;
+      }
+      cursorY += node.height + compactGap;
+    }
+
+    recomputeSubgraphBounds(ir);
+    recomputeBounds(ir);
+
+    // 2) Dock legend block to a low-conflict corner so it doesn't waste layout width.
+    const legendBounds = subgraphById.get(legend.id);
+    if (!legendBounds) {
+      continue;
+    }
+
+    const coreNodes = nonJunctionNodes.filter((node) => !memberSet.has(node.id));
+    const coreBounds = rectFromNodes(coreNodes);
+    if (!coreBounds) {
+      continue;
+    }
+
+    const gapX = clamp(layoutConfig.nodesep * 0.3, 22, 56);
+    const gapY = clamp(layoutConfig.ranksep * 0.18, 22, 56);
+    const candidates = [
+      { x: coreBounds.x + gapX, y: coreBounds.y + gapY, bias: -20 }, // inside top-left
+      { x: coreBounds.x + coreBounds.width - legendBounds.width - gapX, y: coreBounds.y + gapY, bias: 0 }, // inside top-right
+      { x: coreBounds.x + gapX, y: coreBounds.y + coreBounds.height - legendBounds.height - gapY, bias: 24 }, // inside bottom-left
+      { x: coreBounds.x + coreBounds.width - legendBounds.width - gapX, y: coreBounds.y + coreBounds.height - legendBounds.height - gapY, bias: 30 }, // inside bottom-right
+      { x: coreBounds.x - legendBounds.width - gapX, y: coreBounds.y + gapY, bias: 70 }, // outside left top
+      { x: coreBounds.x + coreBounds.width + gapX, y: coreBounds.y + gapY, bias: 80 }, // outside right top
+      { x: coreBounds.x - legendBounds.width - gapX, y: coreBounds.y + coreBounds.height - legendBounds.height - gapY, bias: 95 }, // outside left bottom
+      { x: coreBounds.x + coreBounds.width + gapX, y: coreBounds.y + coreBounds.height - legendBounds.height - gapY, bias: 100 }, // outside right bottom
+    ];
+
+    let best = candidates[0];
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const cand of candidates) {
+      const testRect = {
+        x: cand.x,
+        y: cand.y,
+        width: legendBounds.width,
+        height: legendBounds.height,
+      };
+
+      let overlapPenalty = 0;
+      for (const node of coreNodes) {
+        const overlap = overlapSize(testRect, { x: node.x - 10, y: node.y - 10, width: node.width + 20, height: node.height + 20 });
+        overlapPenalty += overlap.area;
+      }
+
+      const widthExtension = Math.max(0, testRect.x + testRect.width - (coreBounds.x + coreBounds.width));
+      const leftExtension = Math.max(0, coreBounds.x - testRect.x);
+      const verticalTopExtension = Math.max(0, coreBounds.y - testRect.y);
+      const verticalBottomExtension = Math.max(0, testRect.y + testRect.height - (coreBounds.y + coreBounds.height));
+      const blockedPenalty = overlapPenalty > 1e-3 ? 500000 + overlapPenalty * 3 : 0;
+      const score =
+        blockedPenalty +
+        overlapPenalty * 0.35 +
+        widthExtension * 180 +
+        leftExtension * 180 +
+        verticalTopExtension * 120 +
+        verticalBottomExtension * 120 +
+        cand.bias;
+      if (score < bestScore) {
+        bestScore = score;
+        best = cand;
+      }
+    }
+
+    const dx = best.x - legendBounds.x;
+    const dy = best.y - legendBounds.y;
+    if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+      for (const node of memberNodes) {
+        node.x += dx;
+        node.y += dy;
+      }
+      moved = true;
+    }
+  }
+
+  if (moved) {
+    recomputeSubgraphBounds(ir);
+    recomputeBounds(ir);
+  }
+
+  return moved;
+}
+
+function hasExplicitLegendSubgraph(ir: DiagramIr): boolean {
+  if (ir.subgraphs.length === 0) {
+    return false;
+  }
+  const legendKeyword = /(?:\blegend\b|凡例|図の読み方)/i;
+  const legendIdPattern = /(?:^|[_-])legend(?:$|[_-])/i;
+  return ir.subgraphs.some((subgraph) => {
+    const id = String(subgraph.id ?? "");
+    const title = String(subgraph.title ?? "");
+    return legendIdPattern.test(id) || legendKeyword.test(title);
+  });
+}
+
 function buildTopLevelSubgraphMembers(ir: DiagramIr): Map<string, Set<string>> {
   const subgraphById = new Map(ir.subgraphs.map((subgraph) => [subgraph.id, subgraph]));
   const parentById = new Map(ir.subgraphs.map((subgraph) => [subgraph.id, subgraph.parentId]));
@@ -2148,8 +2354,8 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir, layoutConfig: Layou
   return (
     nodeOverlapPenalty * 9.2 +
     subgraphOverlapPenalty * 22 +
-    crossingPenalty * 1280 +
-    edgeNodePenalty * 620 +
+    crossingPenalty * 1700 +
+    edgeNodePenalty * 1200 +
     backwardPenalty * 4.4 +
     edgeLengthPenalty * 0.11 +
     bendPenalty * 22 +
@@ -2389,6 +2595,7 @@ function applyLayout(ir: DiagramIr, targetAspectRatio?: number): void {
   }
 
   const rankdir = toRankdir(ir.meta.direction);
+  const hasLegend = hasExplicitLegendSubgraph(ir);
   const movedByJunction = enforceJunctionSidePlacement(ir);
   optimizeLayoutWithRestarts(ir, rankdir, movedByJunction, effectiveLayout);
   const movedBySubgraphConstraint = enforceTopLevelSubgraphSeparation(ir, effectiveLayout, 10);
@@ -2404,29 +2611,39 @@ function applyLayout(ir: DiagramIr, targetAspectRatio?: number): void {
     rebuildEdgeRoutesFromSideAnchors(ir);
   }
 
-  const movedBySkewReduction = reduceDiagonalSkew(ir, rankdir, effectiveLayout);
-  if (movedBySkewReduction) {
-    enforceSpatialConstraints(ir, effectiveLayout, 10);
-    inferEdgeSideHints(ir, rankdir);
-    rebuildEdgeRoutesFromSideAnchors(ir);
-  }
+  if (!hasLegend) {
+    const movedBySkewReduction = reduceDiagonalSkew(ir, rankdir, effectiveLayout);
+    if (movedBySkewReduction) {
+      enforceSpatialConstraints(ir, effectiveLayout, 10);
+      inferEdgeSideHints(ir, rankdir);
+      rebuildEdgeRoutesFromSideAnchors(ir);
+    }
 
-  const movedByQuadrantRebalance = rebalanceQuadrantCoverage(ir, rankdir, effectiveLayout);
-  if (movedByQuadrantRebalance) {
-    enforceSpatialConstraints(ir, effectiveLayout, 10);
-    inferEdgeSideHints(ir, rankdir);
-    rebuildEdgeRoutesFromSideAnchors(ir);
-  }
+    const movedByQuadrantRebalance = rebalanceQuadrantCoverage(ir, rankdir, effectiveLayout);
+    if (movedByQuadrantRebalance) {
+      enforceSpatialConstraints(ir, effectiveLayout, 10);
+      inferEdgeSideHints(ir, rankdir);
+      rebuildEdgeRoutesFromSideAnchors(ir);
+    }
 
-  const movedByQuadrantPromotion = promoteUnderfilledQuadrant(ir, rankdir, effectiveLayout);
-  if (movedByQuadrantPromotion) {
-    enforceSpatialConstraints(ir, effectiveLayout, 10);
-    inferEdgeSideHints(ir, rankdir);
-    rebuildEdgeRoutesFromSideAnchors(ir);
+    const movedByQuadrantPromotion = promoteUnderfilledQuadrant(ir, rankdir, effectiveLayout);
+    if (movedByQuadrantPromotion) {
+      enforceSpatialConstraints(ir, effectiveLayout, 10);
+      inferEdgeSideHints(ir, rankdir);
+      rebuildEdgeRoutesFromSideAnchors(ir);
+    }
   }
 
   if (Number.isFinite(targetAspectRatio)) {
     fitLayoutToTargetAspect(ir, targetAspectRatio as number, rankdir, effectiveLayout, 9);
+  }
+
+  const movedByLegendCompaction = compactDetachedLegendSubgraphs(ir, effectiveLayout);
+  if (movedByLegendCompaction) {
+    // Keep legend docking as a post-fit finalization so it doesn't perturb
+    // the core graph routing quality.
+    recomputeSubgraphBounds(ir);
+    recomputeBounds(ir);
   }
 
   recomputeSubgraphBounds(ir);
