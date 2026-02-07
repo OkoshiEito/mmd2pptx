@@ -499,6 +499,44 @@ def choose_connection_sides(
     return best_src, best_dst
 
 
+def choose_connection_sides_with_hints(
+    src: dict[str, Any],
+    dst: dict[str, Any],
+    *,
+    hinted_src_side: int | None,
+    hinted_dst_side: int | None,
+) -> tuple[int, int]:
+    auto_src, auto_dst = choose_connection_sides(src, dst)
+    auto_cost = connection_cost(src, dst, auto_src, auto_dst)
+
+    # Accept hinted sides only when not materially worse than shortest route.
+    # This keeps diagrams readable when author-provided sides conflict with the
+    # final layout.
+    tolerance = max(10.0, auto_cost * 0.20)
+
+    if hinted_src_side is not None and hinted_dst_side is not None:
+        hinted_cost = connection_cost(src, dst, hinted_src_side, hinted_dst_side)
+        if hinted_cost <= auto_cost + tolerance:
+            return hinted_src_side, hinted_dst_side
+        return auto_src, auto_dst
+
+    if hinted_src_side is not None:
+        best_dst = min((TOP, LEFT, BOTTOM, RIGHT), key=lambda side: connection_cost(src, dst, hinted_src_side, side))
+        hinted_cost = connection_cost(src, dst, hinted_src_side, best_dst)
+        if hinted_cost <= auto_cost + tolerance:
+            return hinted_src_side, best_dst
+        return auto_src, auto_dst
+
+    if hinted_dst_side is not None:
+        best_src = min((TOP, LEFT, BOTTOM, RIGHT), key=lambda side: connection_cost(src, dst, side, hinted_dst_side))
+        hinted_cost = connection_cost(src, dst, best_src, hinted_dst_side)
+        if hinted_cost <= auto_cost + tolerance:
+            return best_src, hinted_dst_side
+        return auto_src, auto_dst
+
+    return auto_src, auto_dst
+
+
 def side_sort_axis(side: int, from_node: dict[str, Any], to_node: dict[str, Any], *, source_side: bool) -> float:
     src = from_node if source_side else to_node
     dst = to_node if source_side else from_node
@@ -1732,23 +1770,12 @@ def render(
         else:
             requested_src_side = side_from_token(style.get("startSide"))
             requested_dst_side = side_from_token(style.get("endSide"))
-
-            if requested_src_side is not None and requested_dst_side is not None:
-                src_side, dst_side = requested_src_side, requested_dst_side
-            elif requested_src_side is not None:
-                src_side = requested_src_side
-                dst_side = min(
-                    (TOP, LEFT, BOTTOM, RIGHT),
-                    key=lambda candidate: connection_cost(src_anchor, dst_anchor, src_side, candidate),
-                )
-            elif requested_dst_side is not None:
-                dst_side = requested_dst_side
-                src_side = min(
-                    (TOP, LEFT, BOTTOM, RIGHT),
-                    key=lambda candidate: connection_cost(src_anchor, dst_anchor, candidate, dst_side),
-                )
-            else:
-                src_side, dst_side = choose_connection_sides(src_anchor, dst_anchor)
+            src_side, dst_side = choose_connection_sides_with_hints(
+                src_anchor,
+                dst_anchor,
+                hinted_src_side=requested_src_side,
+                hinted_dst_side=requested_dst_side,
+            )
             loop_points = None
             loop_label_anchor = None
 
