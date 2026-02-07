@@ -14,6 +14,8 @@ interface SegmentRef {
 
 export interface ReadabilityMetrics {
   nodeOverlapArea: number;
+  subgraphOverlapArea: number;
+  nodeOutOfSubgraphCount: number;
   edgeCrossings: number;
   edgeThroughNodeCount: number;
   edgeLabelNodeOverlapCount: number;
@@ -222,6 +224,39 @@ export function evaluateReadability(ir: DiagramIr): ReadabilityEvaluation {
     }
   }
 
+  let subgraphOverlapArea = 0;
+  const subgraphs = ir.subgraphs || [];
+  for (let i = 0; i < subgraphs.length; i += 1) {
+    for (let j = i + 1; j < subgraphs.length; j += 1) {
+      subgraphOverlapArea += rectOverlapArea(
+        { x: subgraphs[i].x, y: subgraphs[i].y, w: subgraphs[i].width, h: subgraphs[i].height },
+        { x: subgraphs[j].x, y: subgraphs[j].y, w: subgraphs[j].width, h: subgraphs[j].height },
+      );
+    }
+  }
+
+  const subgraphById = new Map(subgraphs.map((subgraph) => [subgraph.id, subgraph]));
+  let nodeOutOfSubgraphCount = 0;
+  for (const node of nodes) {
+    const subgraphId = node.subgraphId;
+    if (!subgraphId) {
+      continue;
+    }
+    const subgraph = subgraphById.get(subgraphId);
+    if (!subgraph) {
+      continue;
+    }
+    const margin = 2;
+    const inside =
+      node.x >= subgraph.x - margin &&
+      node.y >= subgraph.y - margin &&
+      node.x + node.width <= subgraph.x + subgraph.width + margin &&
+      node.y + node.height <= subgraph.y + subgraph.height + margin;
+    if (!inside) {
+      nodeOutOfSubgraphCount += 1;
+    }
+  }
+
   const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
   const segments = collectSegments(ir);
 
@@ -361,6 +396,8 @@ export function evaluateReadability(ir: DiagramIr): ReadabilityEvaluation {
 
   const metrics: ReadabilityMetrics = {
     nodeOverlapArea,
+    subgraphOverlapArea,
+    nodeOutOfSubgraphCount,
     edgeCrossings,
     edgeThroughNodeCount,
     edgeLabelNodeOverlapCount,
@@ -376,6 +413,8 @@ export function evaluateReadability(ir: DiagramIr): ReadabilityEvaluation {
 
   const penalty =
     metrics.nodeOverlapArea * 8.8 +
+    metrics.subgraphOverlapArea * 26 +
+    metrics.nodeOutOfSubgraphCount * 780 +
     metrics.edgeCrossings * 1300 +
     metrics.edgeThroughNodeCount * 520 +
     metrics.edgeLabelNodeOverlapCount * 460 +

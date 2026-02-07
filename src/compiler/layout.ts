@@ -1214,6 +1214,155 @@ function pointInExpandedNode(point: Point, node: DiagramIr["nodes"][number], pad
   );
 }
 
+function overlapSize(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): { overlapX: number; overlapY: number; area: number } {
+  const overlapX = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+  const overlapY = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+  return {
+    overlapX,
+    overlapY,
+    area: overlapX * overlapY,
+  };
+}
+
+function buildTopLevelSubgraphMembers(ir: DiagramIr): Map<string, Set<string>> {
+  const subgraphById = new Map(ir.subgraphs.map((subgraph) => [subgraph.id, subgraph]));
+  const parentById = new Map(ir.subgraphs.map((subgraph) => [subgraph.id, subgraph.parentId]));
+  const topLevelIds = new Set(
+    ir.subgraphs
+      .filter((subgraph) => !subgraph.parentId || !subgraphById.has(subgraph.parentId) || subgraph.parentId === subgraph.id)
+      .map((subgraph) => subgraph.id),
+  );
+
+  const members = new Map<string, Set<string>>();
+  for (const topId of topLevelIds) {
+    members.set(topId, new Set<string>());
+  }
+
+  const findTopLevel = (subgraphId: string | undefined): string | undefined => {
+    if (!subgraphId) {
+      return undefined;
+    }
+    let current = subgraphId;
+    const visited = new Set<string>();
+    while (current && !visited.has(current)) {
+      visited.add(current);
+      if (topLevelIds.has(current)) {
+        return current;
+      }
+      const next = parentById.get(current);
+      if (!next || next === current) {
+        return undefined;
+      }
+      current = next;
+    }
+    return undefined;
+  };
+
+  for (const node of ir.nodes) {
+    const topId = findTopLevel(node.subgraphId);
+    if (!topId) {
+      continue;
+    }
+    const set = members.get(topId);
+    if (set) {
+      set.add(node.id);
+    }
+  }
+
+  return members;
+}
+
+function translateNodeSet(ir: DiagramIr, nodeIds: Set<string>, dx: number, dy: number): boolean {
+  if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) {
+    return false;
+  }
+
+  let moved = false;
+  for (const node of ir.nodes) {
+    if (!nodeIds.has(node.id)) {
+      continue;
+    }
+    node.x += dx;
+    node.y += dy;
+    moved = true;
+  }
+  return moved;
+}
+
+function enforceTopLevelSubgraphSeparation(ir: DiagramIr, passes: number = 8): boolean {
+  if (ir.subgraphs.length < 2) {
+    return false;
+  }
+
+  const subgraphById = new Map(ir.subgraphs.map((subgraph) => [subgraph.id, subgraph]));
+  const topLevelSubgraphs = ir.subgraphs.filter(
+    (subgraph) => !subgraph.parentId || !subgraphById.has(subgraph.parentId) || subgraph.parentId === subgraph.id,
+  );
+  if (topLevelSubgraphs.length < 2) {
+    return false;
+  }
+
+  const memberSets = buildTopLevelSubgraphMembers(ir);
+  recomputeSubgraphBounds(ir);
+  recomputeBounds(ir);
+
+  const targetGap = clamp(Math.min(ir.config.layout.nodesep, ir.config.layout.ranksep) * 0.22, 8, 22);
+  let moved = false;
+
+  for (let pass = 0; pass < passes; pass += 1) {
+    let movedThisPass = false;
+
+    for (let i = 0; i < topLevelSubgraphs.length; i += 1) {
+      for (let j = i + 1; j < topLevelSubgraphs.length; j += 1) {
+        const a = topLevelSubgraphs[i];
+        const b = topLevelSubgraphs[j];
+        const overlap = overlapSize(a, b);
+        if (overlap.overlapX <= 0 || overlap.overlapY <= 0) {
+          continue;
+        }
+
+        const aMembers = memberSets.get(a.id);
+        const bMembers = memberSets.get(b.id);
+        if (!aMembers || !bMembers || aMembers.size === 0 || bMembers.size === 0) {
+          continue;
+        }
+
+        const aCx = a.x + a.width / 2;
+        const aCy = a.y + a.height / 2;
+        const bCx = b.x + b.width / 2;
+        const bCy = b.y + b.height / 2;
+
+        if (overlap.overlapX < overlap.overlapY) {
+          const push = overlap.overlapX / 2 + targetGap / 2;
+          const sign = aCx <= bCx ? -1 : 1;
+          const movedA = translateNodeSet(ir, aMembers, sign * push, 0);
+          const movedB = translateNodeSet(ir, bMembers, -sign * push, 0);
+          movedThisPass = movedThisPass || movedA || movedB;
+        } else {
+          const push = overlap.overlapY / 2 + targetGap / 2;
+          const sign = aCy <= bCy ? -1 : 1;
+          const movedA = translateNodeSet(ir, aMembers, 0, sign * push);
+          const movedB = translateNodeSet(ir, bMembers, 0, -sign * push);
+          movedThisPass = movedThisPass || movedA || movedB;
+        }
+      }
+    }
+
+    if (!movedThisPass) {
+      break;
+    }
+
+    moved = true;
+    recomputeSubgraphBounds(ir);
+    recomputeBounds(ir);
+  }
+
+  return moved;
+}
+
 function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir): number {
   const nonJunctionNodes = ir.nodes.filter((node) => !node.isJunction);
   let nodeOverlapPenalty = 0;
@@ -1229,6 +1378,7 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir): number {
   let bendPenalty = 0;
   let backwardPenalty = 0;
   let edgeNodePenalty = 0;
+  let subgraphOverlapPenalty = 0;
 
   for (const edge of ir.edges) {
     if (!edge.points || edge.points.length < 2) {
@@ -1259,6 +1409,13 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir): number {
     }
   }
 
+  for (let i = 0; i < ir.subgraphs.length; i += 1) {
+    for (let j = i + 1; j < ir.subgraphs.length; j += 1) {
+      const overlap = overlapSize(ir.subgraphs[i], ir.subgraphs[j]);
+      subgraphOverlapPenalty += overlap.area;
+    }
+  }
+
   const segments = collectEdgeSegments(ir);
   let crossingPenalty = 0;
   for (let i = 0; i < segments.length; i += 1) {
@@ -1284,6 +1441,7 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir): number {
 
   return (
     nodeOverlapPenalty * 9.2 +
+    subgraphOverlapPenalty * 22 +
     crossingPenalty * 1280 +
     edgeNodePenalty * 620 +
     backwardPenalty * 4.4 +
@@ -1348,6 +1506,13 @@ function optimizeLayoutWithRestarts(ir: DiagramIr, rankdir: Rankdir, pinnedNodeI
     rebuildEdgeRoutesFromSideAnchors(ir);
     recomputeSubgraphBounds(ir);
     recomputeBounds(ir);
+    const movedBySubgraphConstraint = enforceTopLevelSubgraphSeparation(ir, 8);
+    if (movedBySubgraphConstraint) {
+      inferEdgeSideHints(ir, rankdir);
+      rebuildEdgeRoutesFromSideAnchors(ir);
+      recomputeSubgraphBounds(ir);
+      recomputeBounds(ir);
+    }
 
     const score = scoreLayoutQuality(ir, rankdir);
     if (score + 1e-6 < bestScore) {
@@ -1486,6 +1651,11 @@ function applyLayout(ir: DiagramIr): void {
   const rankdir = toRankdir(ir.meta.direction);
   const movedByJunction = enforceJunctionSidePlacement(ir);
   optimizeLayoutWithRestarts(ir, rankdir, movedByJunction);
+  const movedBySubgraphConstraint = enforceTopLevelSubgraphSeparation(ir, 10);
+  if (movedBySubgraphConstraint) {
+    inferEdgeSideHints(ir, rankdir);
+    rebuildEdgeRoutesFromSideAnchors(ir);
+  }
 
   recomputeSubgraphBounds(ir);
   recomputeBounds(ir);
