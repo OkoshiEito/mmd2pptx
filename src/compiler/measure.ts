@@ -197,10 +197,15 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
     const longestLine = Math.max(...lineLengths, effectiveTextLength(node.id));
     const rawTextWidth = longestLine * fontSize * 0.68;
 
+    const hasIcon = Boolean(node.icon && node.icon.trim().length > 0);
     let width =
       node.width > 0
         ? clamp(node.width, DEFAULT_MEASURE_CONFIG.minWidth, maxWidth)
         : clamp(rawTextWidth + DEFAULT_MEASURE_CONFIG.paddingX * 2, DEFAULT_MEASURE_CONFIG.minWidth, maxWidth);
+
+    if (hasIcon) {
+      width = Math.max(width, 148);
+    }
 
     const usableWidth = Math.max(24, width - DEFAULT_MEASURE_CONFIG.paddingX * 2);
     const maxUnitsPerLine = Math.max(6, usableWidth / (fontSize * 0.68));
@@ -217,7 +222,8 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
     }
 
     const lineCount = Math.max(1, wrappedLines.length);
-    const desiredHeight = (lineCount * lineHeight + DEFAULT_MEASURE_CONFIG.paddingY * 2) * heightScale;
+    const iconHeadroom = hasIcon ? Math.max(20, fontSize * 1.3) : 0;
+    const desiredHeight = (lineCount * lineHeight + DEFAULT_MEASURE_CONFIG.paddingY * 2 + iconHeadroom) * heightScale;
 
     const height =
       node.height > 0

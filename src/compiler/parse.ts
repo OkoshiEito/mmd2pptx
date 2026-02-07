@@ -1256,7 +1256,7 @@ function serviceShapeFromArchitectureIcon(iconRaw?: string): NodeShape {
 
 type ArchitectureDeclaration =
   | { kind: "group"; id: string; title: string; parentId?: string }
-  | { kind: "service"; id: string; label: string; shape: NodeShape; parentId?: string }
+  | { kind: "service"; id: string; label: string; shape: NodeShape; icon?: string; parentId?: string }
   | { kind: "junction"; id: string; label: string; parentId?: string };
 
 function parseArchitectureDeclaration(raw: string): ArchitectureDeclaration | null {
@@ -1280,7 +1280,7 @@ function parseArchitectureDeclaration(raw: string): ArchitectureDeclaration | nu
   );
   if (serviceMatch) {
     const id = serviceMatch[1].trim();
-    const icon = serviceMatch[2];
+    const icon = serviceMatch[2]?.trim();
     const label = cleanLabel(serviceMatch[3] ?? id);
     const parentId = serviceMatch[4]?.trim();
     return {
@@ -1288,6 +1288,7 @@ function parseArchitectureDeclaration(raw: string): ArchitectureDeclaration | nu
       id,
       label,
       shape: serviceShapeFromArchitectureIcon(icon),
+      icon,
       parentId: parentId || undefined,
     };
   }
@@ -1498,6 +1499,7 @@ function parseArchitectureDiagram(
             id: declaration.id,
             label: declaration.label,
             shape: declaration.shape,
+            icon: declaration.icon,
             subgraphId: declaration.parentId,
             line: lineNumber,
             raw: trimmed,

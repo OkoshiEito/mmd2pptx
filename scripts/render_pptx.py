@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -16,6 +17,16 @@ from pptx.enum.text import MSO_AUTO_SIZE, MSO_VERTICAL_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.oxml.xmlchemy import OxmlElement
 from pptx.util import Inches, Pt
+
+try:
+    import cairosvg  # type: ignore
+except Exception:
+    cairosvg = None
+
+try:
+    import requests  # type: ignore
+except Exception:
+    requests = None
 
 PX_PER_INCH = 96.0
 EMU_PER_INCH = 914400.0
@@ -79,6 +90,44 @@ SHAPE_MAP = {
     "summingJunction": MSO_SHAPE.FLOWCHART_SUMMING_JUNCTION,
 }
 
+ARCH_THEME_BY_PROVIDER = {
+    "aws": {"fill": "FFF7ED", "stroke": "FB923C", "text": "7C2D12"},
+    "azure": {"fill": "EFF6FF", "stroke": "0EA5E9", "text": "0C4A6E"},
+    "gcp": {"fill": "ECFDF5", "stroke": "22C55E", "text": "14532D"},
+    "openai": {"fill": "EEF2FF", "stroke": "818CF8", "text": "312E81"},
+    "terraform": {"fill": "F5F3FF", "stroke": "8B5CF6", "text": "4C1D95"},
+}
+
+ICONIFY_DIRECT_PREFIXES = {
+    "simple-icons",
+    "mdi",
+    "tabler",
+    "logos",
+    "lucide",
+    "ph",
+    "ri",
+    "bi",
+    "material-symbols",
+}
+
+AWS_SERVICE_ICON_MAP = {
+    "s3": "simple-icons/amazons3",
+    "rds": "simple-icons/amazonrds",
+    "postgres": "simple-icons/postgresql",
+    "postgresql": "simple-icons/postgresql",
+    "lambda": "simple-icons/awslambda",
+    "apigateway": "simple-icons/amazonapigateway",
+    "api-gateway": "simple-icons/amazonapigateway",
+    "ecs": "simple-icons/amazonecs",
+    "ecr": "simple-icons/amazonecr",
+    "sqs": "simple-icons/amazonsqs",
+    "sns": "simple-icons/amazonsns",
+    "dynamodb": "simple-icons/amazondynamodb",
+    "eventbridge": "simple-icons/amazoneventbridge",
+    "cloudwatch": "simple-icons/amazoncloudwatch",
+    "kms": "simple-icons/amazonkms",
+}
+
 
 def px_to_in(value: float) -> float:
     return value / PX_PER_INCH
@@ -109,6 +158,157 @@ def blend_with_white(value: str, ratio: float = 0.72) -> str:
     wg = int(g * (1.0 - ratio) + 255 * ratio)
     wb = int(b * (1.0 - ratio) + 255 * ratio)
     return f"{wr:02X}{wg:02X}{wb:02X}"
+
+
+def _as_slug(value: str) -> str:
+    text = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
+    return text.strip("-")
+
+
+def _provider_from_text(text: str) -> str | None:
+    lowered = text.lower()
+    if "openai" in lowered:
+        return "openai"
+    if "azure" in lowered or "microsoft" in lowered:
+        return "azure"
+    if "aws" in lowered or "amazon" in lowered:
+        return "aws"
+    if "gcp" in lowered or "google cloud" in lowered:
+        return "gcp"
+    if "terraform" in lowered:
+        return "terraform"
+    return None
+
+
+def infer_arch_theme(node: dict[str, Any]) -> dict[str, str] | None:
+    icon_raw = str(node.get("icon", "")).strip()
+    if not icon_raw:
+        return None
+    label = str(node.get("label", ""))
+    node_id = str(node.get("id", ""))
+    provider = _provider_from_text(f"{icon_raw} {label} {node_id}")
+    if not provider:
+        return None
+    return ARCH_THEME_BY_PROVIDER.get(provider)
+
+
+def normalize_iconify_key(raw: str) -> str:
+    text = raw.strip().lower()
+    if not text:
+        return ""
+    text = text.replace(" ", "-").replace("_", "-")
+    if ":" in text:
+        prefix, name = text.split(":", 1)
+        return f"{prefix}/{name}"
+    return text
+
+
+def iconify_candidates(icon_raw: str, label: str, node_id: str) -> list[str]:
+    out: list[str] = []
+    raw = (icon_raw or "").strip().lower()
+    label_slug = _as_slug(label)
+    id_slug = _as_slug(node_id)
+
+    if raw:
+        normalized = normalize_iconify_key(raw)
+        if "/" in normalized:
+            prefix = normalized.split("/", 1)[0]
+            if prefix in ICONIFY_DIRECT_PREFIXES:
+                out.append(normalized)
+
+        if raw.startswith("aws:") or normalized.startswith("aws/"):
+            service = normalize_iconify_key(raw).split("/", 1)[1] if "/" in normalize_iconify_key(raw) else ""
+            service = service.replace("amazon-", "").replace("aws-", "")
+            if service in AWS_SERVICE_ICON_MAP:
+                out.append(AWS_SERVICE_ICON_MAP[service])
+            out.append(f"simple-icons/amazon{service}")
+            out.append("simple-icons/amazonwebservices")
+        elif raw.startswith("azure:") or normalized.startswith("azure/"):
+            service = normalize_iconify_key(raw).split("/", 1)[1] if "/" in normalize_iconify_key(raw) else ""
+            out.append(f"simple-icons/azure{service}")
+            out.append("simple-icons/microsoftazure")
+        elif raw.startswith("gcp:") or normalized.startswith("gcp/"):
+            service = normalize_iconify_key(raw).split("/", 1)[1] if "/" in normalize_iconify_key(raw) else ""
+            out.append(f"simple-icons/googlecloud{service}")
+            out.append("simple-icons/googlecloud")
+        elif raw.startswith("openai:") or normalized.startswith("openai/"):
+            out.append("simple-icons/openai")
+        elif raw in {"aws", "amazon"}:
+            out.append("simple-icons/amazonwebservices")
+        elif raw in {"azure", "microsoftazure"}:
+            out.append("simple-icons/microsoftazure")
+        elif raw in {"openai"}:
+            out.append("simple-icons/openai")
+        elif raw in {"terraform"}:
+            out.append("simple-icons/terraform")
+
+    inferred_provider = _provider_from_text(f"{raw} {label} {node_id}")
+    if inferred_provider == "aws":
+        out.extend(
+            [
+                "simple-icons/amazonwebservices",
+                "simple-icons/amazons3" if "s3" in f"{label_slug}-{id_slug}" else "",
+                "simple-icons/postgresql" if "postgres" in f"{label_slug}-{id_slug}" else "",
+            ]
+        )
+    elif inferred_provider == "azure":
+        out.append("simple-icons/microsoftazure")
+    elif inferred_provider == "openai":
+        out.append("simple-icons/openai")
+    elif inferred_provider == "terraform":
+        out.append("simple-icons/terraform")
+
+    if "s3" in f"{label_slug}-{id_slug}":
+        out.append("simple-icons/amazons3")
+    if "postgres" in f"{label_slug}-{id_slug}":
+        out.append("simple-icons/postgresql")
+
+    compact: list[str] = []
+    seen: set[str] = set()
+    for item in out:
+        key = item.strip().lower()
+        if not key or key in seen:
+            continue
+        compact.append(key)
+        seen.add(key)
+    return compact
+
+
+def icon_cache_dir() -> Path:
+    return Path.home() / ".cache" / "mmd2pptx" / "icons"
+
+
+def resolve_icon_png(icon_raw: str, label: str, node_id: str, size_px: int = 96) -> Path | None:
+    if not icon_raw or not icon_raw.strip():
+        return None
+    if requests is None or cairosvg is None:
+        return None
+
+    cache_dir = icon_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    timeout = (4, 8)
+
+    for icon_key in iconify_candidates(icon_raw, label, node_id):
+        digest = hashlib.sha1(f"{icon_key}:{size_px}".encode("utf-8")).hexdigest()[:16]
+        png_path = cache_dir / f"{digest}.png"
+        if png_path.exists() and png_path.stat().st_size > 0:
+            return png_path
+
+        url = f"https://api.iconify.design/{icon_key}.svg"
+        try:
+            response = requests.get(url, timeout=timeout, headers={"User-Agent": "mmd2pptx/0.1"})
+            if response.status_code != 200:
+                continue
+            svg_bytes = response.content
+            if b"<svg" not in svg_bytes[:256]:
+                continue
+            cairosvg.svg2png(bytestring=svg_bytes, write_to=str(png_path), output_width=size_px, output_height=size_px)
+            if png_path.exists() and png_path.stat().st_size > 0:
+                return png_path
+        except Exception:
+            continue
+
+    return None
 
 
 def parse_slide_size(slide_size: str | None) -> tuple[float, float, float, float]:
@@ -1318,6 +1518,7 @@ def render(
         subgraph["id"]: subgraph for subgraph in ir.get("subgraphs", []) if isinstance(subgraph.get("id"), str)
     }
     node_shape_map: dict[str, Any] = {}
+    node_icon_map: dict[str, Path] = {}
     subgraph_shape_map: dict[str, Any] = {}
     node_box_map: dict[str, tuple[float, float, float, float]] = {}
     obstacle_boxes: list[tuple[float, float, float, float]] = []
@@ -1399,11 +1600,28 @@ def render(
             obstacle_boxes.append((title_x, title_y, title_w, max(0.20, title_h)))
 
     for node in ir.get("nodes", []):
+        node_id = str(node.get("id", "")).strip()
+        icon_raw = str(node.get("icon", "")).strip()
+        if not node_id or not icon_raw:
+            continue
+        icon_path = resolve_icon_png(icon_raw, str(node.get("label", "")), node_id, size_px=128)
+        if icon_path is not None:
+            node_icon_map[node_id] = icon_path
+
+    for node in ir.get("nodes", []):
         x, y = transform(float(node["x"]), float(node["y"]), scale, offset_x, offset_y)
         w = px_to_in(float(node["width"])) * scale
         h = px_to_in(float(node["height"])) * scale
         shape_name = str(node.get("shape", "rect"))
-        style = node.get("style", {})
+        style = dict(node.get("style", {}))
+        theme = infer_arch_theme(node)
+        if theme:
+            if str(style.get("fill", "F8FAFC")).strip().upper() == "F8FAFC":
+                style["fill"] = theme["fill"]
+            if str(style.get("stroke", "0F172A")).strip().upper() == "0F172A":
+                style["stroke"] = theme["stroke"]
+            if str(style.get("text", "0F172A")).strip().upper() == "0F172A":
+                style["text"] = theme["text"]
         is_stacked_rect = shape_name == "stackedRect"
 
         if is_stacked_rect:
@@ -1427,6 +1645,11 @@ def render(
         if shape_name in {"forkBar", "filledCircle", "smallCircle", "framedCircle"}:
             display_label = ""
 
+        node_id = str(node.get("id", "")).strip()
+        icon_path = node_icon_map.get(node_id)
+        if icon_path is not None and display_label:
+            display_label = f"\n{display_label}"
+
         set_shape_text(
             shape,
             display_label,
@@ -1437,6 +1660,15 @@ def render(
             align="center",
             vertical="middle",
         )
+
+        if icon_path is not None and shape_name not in {"forkBar", "filledCircle", "smallCircle", "framedCircle"}:
+            icon_size = clampf(min(w, h) * 0.24, 0.14, 0.32)
+            ix = clampf(x + 0.06, x + 0.02, x + max(0.02, w - icon_size - 0.02))
+            iy = clampf(y + 0.05, y + 0.02, y + max(0.02, h - icon_size - 0.02))
+            try:
+                slide.shapes.add_picture(str(icon_path), Inches(ix), Inches(iy), Inches(icon_size), Inches(icon_size))
+            except Exception:
+                pass
 
         node_shape_map[node["id"]] = shape
         node_box_map[node["id"]] = (x, y, w, h)

@@ -1,0 +1,33 @@
+%% title: architecture-icon-showcase.mmd
+architecture-beta
+
+group app(cloud)[Application Layer]
+group cloud(aws:cloud)[Cloud / Data Layer]
+
+auth:R --> L:api
+api:B --> T:orchestrator
+orchestrator:R --> L:gateway
+
+group iac(terraform)[IaC]
+service iac(simple-icons/terraform)[IaC Definitions\nfrontend/infra + backend/*/terraform] in iac
+
+service auth(simple-icons/openid)[Auth Service] in app
+service api(simple-icons/fastapi)[API Service] in app
+service orchestrator(simple-icons/docker)[Orchestrator] in app
+service gateway(simple-icons/kubernetes)[Data/Storage Gateway] in app
+
+service pg(simple-icons/postgresql)[PostgreSQL\nexternal/aws/rds-postgres] in cloud
+service s3(simple-icons/amazons3)[Amazon S3] in cloud
+service lambda(simple-icons/awslambda)[AWS Lambda] in cloud
+service aoai(simple-icons/openai)[Azure OpenAI] in cloud
+service monitor(simple-icons/amazoncloudwatch)[CloudWatch] in cloud
+service azure(simple-icons/microsoftazure)[Azure Core] in cloud
+
+iac:B --> T:gateway
+gateway:R --> L:pg
+gateway:B --> T:s3
+lambda:L --> R:gateway
+s3:R --> L:aoai
+monitor:L -- R:lambda
+azure:L --> R:aoai
+api{group}:B --> T:pg
