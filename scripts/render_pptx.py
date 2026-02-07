@@ -459,11 +459,18 @@ def connection_cost(src: dict[str, Any], dst: dict[str, Any], src_side: int, dst
     src_dot = src_nx * vx + src_ny * vy
     dst_dot = dst_nx * (-vx) + dst_ny * (-vy)
 
+    # Keep distance minimization as the primary goal.
+    # Apply only a moderate penalty when a side points opposite to the edge direction
+    # to avoid lines that immediately dive into the source/target shape.
     penalty = 0.0
     if src_dot <= 0:
-        penalty += max(120.0, dist * 1.6)
+        penalty += 42.0 + dist * 0.42
     if dst_dot <= 0:
-        penalty += max(120.0, dist * 1.6)
+        penalty += 42.0 + dist * 0.42
+
+    # Slightly prefer axis-consistent pairings when costs are near-equal.
+    if (src_side in {TOP, BOTTOM}) != (dst_side in {TOP, BOTTOM}):
+        penalty += 5.0
 
     return dist + penalty
 
@@ -475,29 +482,7 @@ def choose_connection_sides(
     avoid_exact_pair: tuple[int, int] | None = None,
 ) -> tuple[int, int]:
     sides = (TOP, LEFT, BOTTOM, RIGHT)
-    src_cx = float(src["x"]) + float(src["width"]) / 2.0
-    src_cy = float(src["y"]) + float(src["height"]) / 2.0
-    dst_cx = float(dst["x"]) + float(dst["width"]) / 2.0
-    dst_cy = float(dst["y"]) + float(dst["height"]) / 2.0
-
-    vx = dst_cx - src_cx
-    vy = dst_cy - src_cy
-
-    candidates: list[tuple[int, int]] = []
-    for src_side in sides:
-        if not side_faces_vector(src_side, vx, vy):
-            continue
-        for dst_side in sides:
-            if not side_faces_vector(dst_side, -vx, -vy):
-                continue
-            candidates.append((src_side, dst_side))
-
-    # For reciprocal edges, allow wider candidates so we can avoid exact overlap.
-    if avoid_exact_pair is not None:
-        candidates = [(s, t) for s in sides for t in sides]
-
-    if not candidates:
-        candidates = [(s, t) for s in sides for t in sides]
+    candidates = [(s, t) for s in sides for t in sides]
 
     best_src = RIGHT
     best_dst = LEFT
