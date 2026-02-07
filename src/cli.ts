@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { Command } from "commander";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -8,6 +9,17 @@ import { renderPptx } from "./render/pptx.js";
 import { renderPptxPython, renderSequencePptxPython } from "./render/python.js";
 
 const program = new Command();
+
+interface BuildCliOptions {
+  output?: string;
+  patch?: string;
+  renderer?: string;
+  slideSize?: string;
+  edgeRouting?: string;
+  irOut?: string;
+  fontFamily?: string;
+  lang?: string;
+}
 
 function defaultOutputPath(input: string): string {
   const parsed = path.parse(input);
@@ -57,6 +69,143 @@ function isSequenceDiagramSource(source: string): boolean {
   return false;
 }
 
+function normalizeRendererOption(input: string | undefined): string {
+  return String(input ?? "auto").trim().toLowerCase();
+}
+
+function commandExists(command: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const check = process.platform === "win32" ? "where" : "which";
+    const child = spawn(check, [command], { stdio: "ignore" });
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0));
+  });
+}
+
+async function resolveRenderer(rendererOption: string | undefined): Promise<"python" | "js"> {
+  const renderer = normalizeRendererOption(rendererOption);
+  if (renderer === "python" || renderer === "js") {
+    return renderer;
+  }
+  if (renderer !== "auto") {
+    throw new Error(`Unknown renderer: ${rendererOption}. Use 'auto', 'python', or 'js'.`);
+  }
+
+  const hasUv = await commandExists("uv");
+  return hasUv ? "python" : "js";
+}
+
+async function runBuild(inputs: string[], opts: BuildCliOptions): Promise<void> {
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    throw new Error("At least one input .mmd file is required.");
+  }
+
+  const multiInput = inputs.length > 1;
+  const outputPath = opts.output ?? (multiInput ? defaultMergedOutputPath(inputs) : defaultOutputPath(inputs[0]));
+
+  let patchText: string | undefined;
+  let patch;
+  if (opts.patch) {
+    if (multiInput) {
+      throw new Error("--patch is not supported when multiple input files are provided.");
+    }
+    patchText = await fs.readFile(opts.patch, "utf8");
+    patch = parsePatchYaml(patchText);
+  }
+
+  const rendererOption = normalizeRendererOption(opts.renderer);
+  const renderer = await resolveRenderer(opts.renderer);
+  if (multiInput && renderer !== "python") {
+    throw new Error("Multiple input files require python renderer. Install uv or set --renderer python.");
+  }
+  if (multiInput && opts.irOut) {
+    throw new Error("--ir-out is not supported when multiple input files are provided.");
+  }
+  if (rendererOption === "auto") {
+    process.stdout.write(`Renderer(auto): ${renderer}\n`);
+  }
+
+  for (let index = 0; index < inputs.length; index += 1) {
+    const input = inputs[index];
+    const sourceMmd = await fs.readFile(input, "utf8");
+    const sequenceMode = isSequenceDiagramSource(sourceMmd);
+    const appendToPath = multiInput && index > 0 ? outputPath : undefined;
+
+    if (sequenceMode) {
+      if (renderer !== "python") {
+        throw new Error("sequenceDiagram currently supports only python renderer (install uv).");
+      }
+      await renderSequencePptxPython(sourceMmd, {
+        outputPath,
+        patchText,
+        slideSize: opts.slideSize,
+        edgeRouting: opts.edgeRouting,
+        appendToPath,
+      });
+      if (opts.irOut) {
+        await fs.writeFile(
+          opts.irOut,
+          `${JSON.stringify({ diagramType: "sequence", note: "sequence mode has no flowchart IR output" }, null, 2)}\n`,
+          "utf8",
+        );
+      }
+      continue;
+    }
+
+    const ir = compileMmdToIr(sourceMmd, {
+      patch,
+      fontFamily: opts.fontFamily,
+      lang: opts.lang,
+      targetAspectRatio: slideSizeToAspectRatio(opts.slideSize),
+    });
+    if (opts.irOut) {
+      await fs.writeFile(opts.irOut, `${JSON.stringify(ir, null, 2)}\n`, "utf8");
+    }
+
+    if (renderer === "js") {
+      await renderPptx(ir, {
+        outputPath,
+        sourceMmd,
+        patchText,
+        slideSize: opts.slideSize,
+        edgeRouting: opts.edgeRouting,
+      });
+      continue;
+    }
+
+    await renderPptxPython(ir, {
+      outputPath,
+      patchText,
+      slideSize: opts.slideSize,
+      edgeRouting: opts.edgeRouting,
+      appendToPath,
+    });
+  }
+
+  process.stdout.write(`Generated: ${outputPath}\n`);
+  if (opts.irOut) {
+    process.stdout.write(`IR JSON: ${opts.irOut}\n`);
+  }
+}
+
+function normalizeArgvForDefaultBuild(argv: string[]): string[] {
+  if (argv.length < 3) {
+    return argv;
+  }
+
+  const first = argv[2];
+  if (first.startsWith("-")) {
+    return argv;
+  }
+
+  const knownCommands = new Set(["build", "extract", "doctor", "help"]);
+  if (knownCommands.has(first)) {
+    return argv;
+  }
+
+  return [argv[0], argv[1], "build", ...argv.slice(2)];
+}
+
 program
   .name("mmd2pptx")
   .description("Compile Mermaid .mmd into editable .pptx")
@@ -66,112 +215,25 @@ program
   .command("build")
   .argument("<inputs...>", "input .mmd file(s)")
   .option("-o, --output <path>", "output .pptx path")
-  .option("--patch <path>", "patch yaml path")
-  .option("--renderer <backend>", "render backend: python|js", "python")
-  .option("--slide-size <size>", "slide size: 16:9 | 4:3 | <width>x<height> (inches)", "16:9")
-  .option("--edge-routing <mode>", "edge routing: straight | elbow", "straight")
+  .option("-p, --patch <path>", "patch yaml path")
+  .option("-r, --renderer <backend>", "render backend: auto|python|js", "auto")
+  .option("-s, --slide-size <size>", "slide size: 16:9 | 4:3 | <width>x<height> (inches)", "16:9")
+  .option("-e, --edge-routing <mode>", "edge routing: straight | elbow", "straight")
   .option("--ir-out <path>", "write normalized/layouted IR JSON")
   .option("--font-family <name>", "override rendering font family")
   .option("--lang <code>", "language tag for text rendering", "ja-JP")
-  .action(async (inputs: string[], opts) => {
-    if (!Array.isArray(inputs) || inputs.length === 0) {
-      throw new Error("At least one input .mmd file is required.");
-    }
+  .action(async (inputs: string[], opts: BuildCliOptions) => runBuild(inputs, opts));
 
-    const multiInput = inputs.length > 1;
-    const outputPath = opts.output ?? (multiInput ? defaultMergedOutputPath(inputs) : defaultOutputPath(inputs[0]));
-
-    let patchText: string | undefined;
-    let patch;
-    if (opts.patch) {
-      if (multiInput) {
-        throw new Error("--patch is not supported when multiple input files are provided.");
-      }
-      patchText = await fs.readFile(opts.patch, "utf8");
-      patch = parsePatchYaml(patchText);
-    }
-
-    const renderer = String(opts.renderer ?? "python").toLowerCase();
-    if (multiInput && renderer !== "python") {
-      throw new Error("Multiple input files currently support only --renderer python.");
-    }
-    if (multiInput && opts.irOut) {
-      throw new Error("--ir-out is not supported when multiple input files are provided.");
-    }
-
-    for (let index = 0; index < inputs.length; index += 1) {
-      const input = inputs[index];
-      const sourceMmd = await fs.readFile(input, "utf8");
-      const sequenceMode = isSequenceDiagramSource(sourceMmd);
-      const appendToPath = multiInput && index > 0 ? outputPath : undefined;
-
-      if (sequenceMode) {
-        if (renderer !== "python") {
-          throw new Error("sequenceDiagram currently supports only --renderer python");
-        }
-        await renderSequencePptxPython(sourceMmd, {
-          outputPath,
-          patchText,
-          slideSize: opts.slideSize,
-          edgeRouting: opts.edgeRouting,
-          appendToPath,
-        });
-        if (opts.irOut) {
-          await fs.writeFile(
-            opts.irOut,
-            `${JSON.stringify({ diagramType: "sequence", note: "sequence mode has no flowchart IR output" }, null, 2)}\n`,
-            "utf8",
-          );
-        }
-        continue;
-      }
-
-      if (renderer === "js") {
-        const ir = compileMmdToIr(sourceMmd, {
-          patch,
-          fontFamily: opts.fontFamily,
-          lang: opts.lang,
-          targetAspectRatio: slideSizeToAspectRatio(opts.slideSize),
-        });
-        if (opts.irOut) {
-          await fs.writeFile(opts.irOut, `${JSON.stringify(ir, null, 2)}\n`, "utf8");
-        }
-        await renderPptx(ir, {
-          outputPath,
-          sourceMmd,
-          patchText,
-          slideSize: opts.slideSize,
-          edgeRouting: opts.edgeRouting,
-        });
-        continue;
-      }
-
-      if (renderer === "python") {
-        const ir = compileMmdToIr(sourceMmd, {
-          patch,
-          fontFamily: opts.fontFamily,
-          lang: opts.lang,
-          targetAspectRatio: slideSizeToAspectRatio(opts.slideSize),
-        });
-        if (opts.irOut) {
-          await fs.writeFile(opts.irOut, `${JSON.stringify(ir, null, 2)}\n`, "utf8");
-        }
-        await renderPptxPython(ir, {
-          outputPath,
-          patchText,
-          slideSize: opts.slideSize,
-          edgeRouting: opts.edgeRouting,
-          appendToPath,
-        });
-        continue;
-      }
-
-      throw new Error(`Unknown renderer: ${opts.renderer}. Use 'python' or 'js'.`);
-    }
-
-    process.stdout.write(`Generated: ${outputPath}\n`);
-    if (opts.irOut) {
-      process.stdout.write(`IR JSON: ${opts.irOut}\n`);
+program
+  .command("doctor")
+  .description("Check runtime dependencies for renderer selection")
+  .action(async () => {
+    const hasUv = await commandExists("uv");
+    process.stdout.write(`Node: ${process.version}\n`);
+    process.stdout.write(`uv: ${hasUv ? "found" : "not found"}\n`);
+    process.stdout.write(`default renderer(auto): ${hasUv ? "python" : "js"}\n`);
+    if (!hasUv) {
+      process.stdout.write("tip: install uv to use python renderer (sequenceDiagram and best fidelity)\n");
     }
   });
 
@@ -184,7 +246,8 @@ program
     process.exitCode = 1;
   });
 
-program.parseAsync(process.argv).catch((error) => {
+const argv = normalizeArgvForDefaultBuild([...process.argv]);
+program.parseAsync(argv).catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
   process.exit(1);
 });

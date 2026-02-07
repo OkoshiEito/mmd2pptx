@@ -19,22 +19,26 @@ npm install
 npm run build
 ```
 
-`python` レンダラ（既定）を使う場合は `uv` が必要です。
+`python` レンダラを使う場合は `uv` が必要です。
+`--renderer auto`（既定）は `uv` が見つかれば `python`、なければ `js` を使います。
 
 ## 使い方
 
 ```bash
-# 基本
+# 基本（buildは省略可）
+node dist/cli.js samples/flow.mmd
+
+# buildサブコマンド明示も可
 node dist/cli.js build samples/flow.mmd -o samples/flow.pptx
 
 # 複数mmdを1つのpptxに集約（1ファイル=1スライド）
-node dist/cli.js build samples/flow.mmd samples/self-loop-inline.mmd -o samples/combined.pptx --renderer python
+node dist/cli.js samples/flow.mmd samples/self-loop-inline.mmd -o samples/combined.pptx --renderer python
 
 # patch適用
-node dist/cli.js build samples/flow.mmd --patch samples/flow.patch.yml -o samples/flow.pptx
+node dist/cli.js samples/flow.mmd --patch samples/flow.patch.yml -o samples/flow.pptx
 
 # JSレンダラを使う場合
-node dist/cli.js build samples/flow.mmd --renderer js -o samples/flow.pptx
+node dist/cli.js samples/flow.mmd --renderer js -o samples/flow.pptx
 
 # sequenceDiagram (python renderer)
 node dist/cli.js build samples/sequence-all-expr.mmd --renderer python -o samples/sequence-all-expr.pptx
@@ -44,6 +48,9 @@ node dist/cli.js build samples/class_syntax_coverage.mmd --renderer python -o sa
 
 # IRを出力
 node dist/cli.js build samples/flow.mmd --ir-out samples/flow.ir.json -o samples/flow.pptx
+
+# 依存関係チェック
+node dist/cli.js doctor
 ```
 
 複数入力時の補足:
@@ -56,7 +63,26 @@ node dist/cli.js build samples/flow.mmd --ir-out samples/flow.ir.json -o samples
 開発時は `tsx` で直接実行できます。
 
 ```bash
-npm run dev -- build samples/flow.mmd -o samples/flow.pptx
+npm run dev -- samples/flow.mmd -o samples/flow.pptx
+```
+
+## 配布（npm CLI）
+
+```bash
+# グローバルインストール
+npm i -g mmd2pptx
+
+# 単発実行
+npx mmd2pptx samples/flow.mmd
+```
+
+公開手順（メンテナ向け）:
+
+```bash
+npm run lint
+npm run build
+npm version patch
+npm publish --access public
 ```
 
 ## patch YAML 例
