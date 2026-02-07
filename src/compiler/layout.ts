@@ -1901,7 +1901,7 @@ function reduceDiagonalSkew(
 
   const beforeState = captureLayoutState(ir);
   const beforeObjective =
-    scoreLayoutQuality(ir, rankdir, layoutConfig) + before.imbalance * 2600 + Math.abs(before.corr) * 900;
+    layoutSelectionObjective(ir, rankdir, layoutConfig) + before.imbalance * 2600 + Math.abs(before.corr) * 900;
 
   const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
   const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
@@ -1934,7 +1934,7 @@ function reduceDiagonalSkew(
 
     const after = computeCorrAndImbalance();
     const afterObjective =
-      scoreLayoutQuality(ir, rankdir, layoutConfig) + after.imbalance * 2600 + Math.abs(after.corr) * 900;
+      layoutSelectionObjective(ir, rankdir, layoutConfig) + after.imbalance * 2600 + Math.abs(after.corr) * 900;
 
     const improvedCorr = Math.abs(after.corr) + 1e-6 < Math.abs(before.corr) * 0.9;
     const improvedImbalance = after.imbalance + 1e-6 < before.imbalance * 0.9;
@@ -2015,7 +2015,7 @@ function rebalanceQuadrantCoverage(
   }
 
   const beforeState = captureLayoutState(ir);
-  const beforeObjective = scoreLayoutQuality(ir, rankdir, layoutConfig) + before.imbalance * 2800;
+  const beforeObjective = layoutSelectionObjective(ir, rankdir, layoutConfig) + before.imbalance * 2800;
   const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
   const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
   const spanX = Math.max(1, ir.bounds.width);
@@ -2065,7 +2065,7 @@ function rebalanceQuadrantCoverage(
     recomputeBounds(ir);
 
     const after = computeState();
-    const afterObjective = scoreLayoutQuality(ir, rankdir, layoutConfig) + after.imbalance * 2800;
+    const afterObjective = layoutSelectionObjective(ir, rankdir, layoutConfig) + after.imbalance * 2800;
     const improvedImbalance = after.imbalance + 1e-6 < before.imbalance * 0.88;
     const acceptableQuality = afterObjective <= beforeObjective * 1.08;
     if (improvedImbalance && acceptableQuality) {
