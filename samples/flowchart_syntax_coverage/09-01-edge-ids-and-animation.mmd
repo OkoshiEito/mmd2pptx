@@ -1,0 +1,19 @@
+---
+config:
+  flowchart:
+    curve: stepBefore
+---
+%% title: 09-01-edge-ids-and-animation.mmd
+flowchart LR
+  A e1@--> B
+  B e2@==> C
+  A e3@--> D
+
+  %% edge metadata: animation / curve
+  e1@{ animate: true }
+  e2@{ animation: fast }
+  e3@{ curve: linear }
+
+  %% classDef で edge をアニメーション（stroke-dasharray のカンマは \, でエスケープ）
+  classDef animate stroke-dasharray: 5\,5,animation: dash 2s linear infinite;
+  class e1 animate

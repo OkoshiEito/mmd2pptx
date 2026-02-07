@@ -1,0 +1,282 @@
+{
+  "meta": {
+    "direction": "TD",
+    "source": "flowchart TD\n  subgraph Core[Core Services]\n    Start([開始]) --> Decide{条件は?}\n    Decide -->|Yes| DoWork[/処理する/]\n    Decide -->|No| Skip[スキップ]\n  end\n\n  DoWork --> Finish((完了))\n  Skip -.-> Finish\n"
+  },
+  "config": {
+    "layout": {
+      "ranksep": 110,
+      "nodesep": 80,
+      "edgesep": 30,
+      "marginx": 30,
+      "marginy": 30
+    },
+    "fontFamily": "Yu Gothic UI",
+    "lang": "ja-JP"
+  },
+  "nodes": [
+    {
+      "id": "Start",
+      "label": "開始",
+      "shape": "roundRect",
+      "subgraphId": "Core",
+      "width": 110,
+      "height": 56,
+      "x": 183.5,
+      "y": 85,
+      "style": {
+        "fill": "F8FAFC",
+        "stroke": "0F172A",
+        "text": "0F172A",
+        "strokeWidth": 1,
+        "radius": 0.08,
+        "fontSize": 14
+      }
+    },
+    {
+      "id": "Decide",
+      "label": "Decide",
+      "shape": "rect",
+      "subgraphId": "Core",
+      "width": 220,
+      "height": 56,
+      "x": 152.5,
+      "y": 251,
+      "style": {
+        "fill": "F8FAFC",
+        "stroke": "0F172A",
+        "text": "0F172A",
+        "strokeWidth": 1,
+        "radius": 0.08,
+        "fontSize": 14
+      }
+    },
+    {
+      "id": "DoWork",
+      "label": "DoWork",
+      "shape": "rect",
+      "subgraphId": "Core",
+      "width": 110,
+      "height": 56,
+      "x": 112.5,
+      "y": 417,
+      "style": {
+        "fill": "F8FAFC",
+        "stroke": "0F172A",
+        "text": "0F172A",
+        "strokeWidth": 1,
+        "radius": 0.08,
+        "fontSize": 14
+      }
+    },
+    {
+      "id": "Skip",
+      "label": "Skip",
+      "shape": "rect",
+      "subgraphId": "Core",
+      "width": 110,
+      "height": 56,
+      "x": 302.5,
+      "y": 417,
+      "style": {
+        "fill": "F8FAFC",
+        "stroke": "0F172A",
+        "text": "0F172A",
+        "strokeWidth": 1,
+        "radius": 0.08,
+        "fontSize": 14
+      }
+    },
+    {
+      "id": "Finish",
+      "label": "Finish",
+      "shape": "rect",
+      "width": 110,
+      "height": 56,
+      "x": 207.5,
+      "y": 656,
+      "style": {
+        "fill": "F8FAFC",
+        "stroke": "0F172A",
+        "text": "0F172A",
+        "strokeWidth": 1,
+        "radius": 0.08,
+        "fontSize": 14
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "start_decide_solid_end_001_1",
+      "from": "Start",
+      "to": "Decide",
+      "points": [
+        {
+          "x": 262.5,
+          "y": 141
+        },
+        {
+          "x": 262.5,
+          "y": 196
+        },
+        {
+          "x": 262.5,
+          "y": 251
+        }
+      ],
+      "style": {
+        "color": "1E293B",
+        "width": 1.3,
+        "lineStyle": "solid",
+        "arrow": "end",
+        "fontSize": 11
+      }
+    },
+    {
+      "id": "decide_dowork_yes_solid_end_002_1",
+      "from": "Decide",
+      "to": "DoWork",
+      "label": "Yes",
+      "points": [
+        {
+          "x": 230.45180722891567,
+          "y": 307
+        },
+        {
+          "x": 167.5,
+          "y": 362
+        },
+        {
+          "x": 167.5,
+          "y": 417
+        }
+      ],
+      "style": {
+        "color": "1E293B",
+        "width": 1.3,
+        "lineStyle": "solid",
+        "arrow": "end",
+        "fontSize": 11
+      }
+    },
+    {
+      "id": "decide_skip_no_solid_end_003_1",
+      "from": "Decide",
+      "to": "Skip",
+      "label": "No",
+      "points": [
+        {
+          "x": 294.54819277108436,
+          "y": 307
+        },
+        {
+          "x": 357.5,
+          "y": 362
+        },
+        {
+          "x": 357.5,
+          "y": 417
+        }
+      ],
+      "style": {
+        "color": "1E293B",
+        "width": 1.3,
+        "lineStyle": "solid",
+        "arrow": "end",
+        "fontSize": 11
+      }
+    },
+    {
+      "id": "dowork_finish_solid_end_004_1",
+      "from": "DoWork",
+      "to": "Finish",
+      "points": [
+        {
+          "x": 167.5,
+          "y": 473
+        },
+        {
+          "x": 167.5,
+          "y": 528
+        },
+        {
+          "x": 167.5,
+          "y": 583
+        },
+        {
+          "x": 230.45180722891567,
+          "y": 638
+        }
+      ],
+      "style": {
+        "color": "1E293B",
+        "width": 1.3,
+        "lineStyle": "solid",
+        "arrow": "end",
+        "fontSize": 11
+      }
+    },
+    {
+      "id": "skip_finish_dotted_end_005_1",
+      "from": "Skip",
+      "to": "Finish",
+      "points": [
+        {
+          "x": 357.5,
+          "y": 473
+        },
+        {
+          "x": 357.5,
+          "y": 528
+        },
+        {
+          "x": 357.5,
+          "y": 583
+        },
+        {
+          "x": 294.54819277108436,
+          "y": 638
+        }
+      ],
+      "style": {
+        "color": "1E293B",
+        "width": 1.3,
+        "lineStyle": "dotted",
+        "arrow": "end",
+        "fontSize": 11
+      }
+    }
+  ],
+  "subgraphs": [
+    {
+      "id": "Core",
+      "title": "Core Services",
+      "nodeIds": [
+        "Start",
+        "Decide",
+        "DoWork",
+        "Skip"
+      ],
+      "x": 78.5,
+      "y": 51,
+      "width": 368,
+      "height": 456,
+      "style": {
+        "stroke": "64748B",
+        "fill": "F8FAFC",
+        "text": "334155",
+        "dash": "dash",
+        "strokeWidth": 1,
+        "padding": 34
+      }
+    }
+  ],
+  "bounds": {
+    "minX": 78.5,
+    "minY": 51,
+    "maxX": 446.5,
+    "maxY": 712,
+    "width": 368,
+    "height": 661
+  }
+}

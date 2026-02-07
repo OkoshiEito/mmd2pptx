@@ -1,0 +1,119 @@
+sequenceDiagram
+    title Sequence Syntax Coverage
+    accTitle: Sequence Diagram Accessibility Title
+    accDescr {
+      Coverage sample for Mermaid sequenceDiagram expressions.
+      Used to validate mmd2pptx parser and renderer behavior.
+    }
+
+    box #E6F7FF Public Zone
+      actor U as User
+      participant API@{ "type": "boundary", "alias": "Public API (inline)" } as Public API
+    end
+    box transparent Core Services
+      participant Auth@{ "type": "control", "alias": "Auth Service" }
+      actor DB@{ "type": "database" } as User DB
+      participant Ent@{ "type": "entity" } as Domain Entity
+      participant Col@{ "type": "collections" } as Session Cache
+      participant Q@{ "type": "queue" } as Job Queue
+    end
+
+    links API: {"Docs":"https://example.com/docs","Runbook":"https://example.com/runbook"}
+    link DB: Dashboard @ https://example.com/db-dashboard
+    properties API: {"owner":"platform","tier":"gold"}
+    details DB: primary=ap-northeast-1
+
+    autonumber 10 5
+    U->API: no arrow head
+    API-->U: dotted no arrow
+    U->>+API: solid arrow + activate
+    API-->>-U: dotted arrow + deactivate
+    API<<->>Auth: bidirectional solid
+    Auth<<-->>API: bidirectional dotted
+    API-xAuth: cross solid
+    API--xAuth: cross dotted
+    API-)Auth: open solid
+    API--)Auth: open dotted
+
+    Auth-|\DB: half top
+    Auth-|/DB: half bottom
+    Auth-\\DB: stick top
+    Auth-//DB: stick bottom
+    DB/|-Auth: reverse top
+    DB\|-Auth: reverse bottom
+    DB//-Auth: reverse stick top
+    DB\\-Auth: reverse stick bottom
+    Auth--|\DB: dotted half top
+    Auth--|/DB: dotted half bottom
+    Auth--\\DB: dotted stick top
+    Auth--//DB: dotted stick bottom
+    DB/|--Auth: dotted reverse top
+    DB\|--Auth: dotted reverse bottom
+    DB//--Auth: dotted reverse stick top
+    DB\\--Auth: dotted reverse stick bottom
+
+    U->>()API: central to API
+    U()->>API: central from U
+    API()->>()Auth: dual central
+
+    Note right of API: right note<br/>line2
+    Note left of Auth: left note
+    Note over API,Auth: shared note
+
+    activate Auth
+    Auth->Ent: validate
+    deactivate Auth
+
+    create participant TMP as Temp Worker
+    API->>TMP: spawn
+    TMP-->>API: ready
+    destroy participant TMP
+    API->>TMP: terminate
+
+    loop Retry loop
+      API->>Auth: retry
+      Auth-->>API: retry result
+    end
+
+    alt success
+      API->>U: ok
+    else failure
+      API->>U: ng
+    end
+
+    opt optional call
+      API->>Q: enqueue
+    end
+
+    par branch A
+      API->>Q: A
+    and branch B
+      API->>Q: B
+    end
+
+    par_over overlapped branches
+      Auth->>DB: read
+    and another branch
+      Auth->>Col: cache
+    end
+
+    critical payment critical
+      U->>API: pay
+    option timeout
+      API->>U: retry later
+    option unauthorized
+      API->>U: login
+    end
+
+    break hard failure
+      API->>U: abort
+    end
+
+    rect rgba(180,220,255,0.25) highlighted zone
+      API->>Auth: traced call
+      Auth-->>API: traced return
+    end
+
+    U->>U: self loop
+    U-xU: self cross
+    U->>API: I #9829; Mermaid #infin; and hash #35;

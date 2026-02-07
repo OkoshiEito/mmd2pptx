@@ -1,0 +1,50 @@
+%% Group Detail Sequence（グルーピング詳細シーケンス）
+%% 作成日: 2026-02-07
+%% 対象: DOMAIN / backend/websocket/src/usecases/
+%% 入口: POST /api/v1/pptx/apply-updates（実体: backend/websocket/src/api/v1/user/pptx_roundtrip.py:apply_updates）
+sequenceDiagram
+    actor client as Client
+    participant api as User API\napi/v1/user/pptx_roundtrip.py:apply_updates
+    participant uc as Usecase\nusecases/pptx_roundtrip.py:apply_updates_and_rebuild
+    participant s3h as S3 Handler\n_s3 + file_handlers/s3_file_handler.py
+    participant upd as Usecase Helper\napply_updates_to_pptx_bytes
+    participant pipe as PPTX Pipeline\npptx_pipeline.py
+    participant s3 as Amazon S3
+
+    client->>api: POST /api/v1/pptx/apply-updates\n(s3_key, updates, also_update_catalog)
+    api->>uc: apply_updates_and_rebuild(pptx_key, updates, also_update_catalog)
+
+    uc->>s3h: _s3()
+    s3h-->>uc: S3FileHandler
+
+    uc->>s3h: download_file(pptx_key)
+    s3h->>s3: get_object(Bucket, Key)
+    s3-->>s3h: PPTX bytes
+    s3h-->>uc: pptx_bytes
+
+    uc->>upd: apply_updates_to_pptx_bytes(pptx_bytes, updates, also_update_catalog)
+    upd->>pipe: pptx_to_design(tmp_input)
+    upd->>pipe: update_design_with_llm_outputs(design, updates)
+    upd->>pipe: write_pptx(design, tmp_output)
+    Note right of upd: /tmp に入力・出力PPTXを作成
+    upd-->>uc: UpdatedPptxWithCatalog\n(pptx_bytes, sha256, catalog?)
+
+    uc->>s3h: s3_client.put_object(new_pptx_key, updated.pptx_bytes)
+    s3h->>s3: put_object(.pptx)
+    s3-->>s3h: OK
+
+    alt also_update_catalog == true
+        uc->>s3h: s3_client.put_object(catalog_key, updated.catalog)
+        s3h->>s3: put_object(.json)
+        s3-->>s3h: OK
+    else false or catalog is None
+        Note right of uc: カタログ保存をスキップ
+    end
+
+    uc-->>api: ApplyUpdatesResult\n(new_pptx_key, new_sha256, catalog_key?)
+    api-->>client: 200 ApplyUpdatesResponse
+
+    opt Exception
+        uc--x api: raise Exception
+        api-->>client: 500 HTTPException
+    end

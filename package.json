@@ -1,0 +1,36 @@
+{
+  "name": "mmd2pptx",
+  "version": "0.1.0",
+  "description": "Mermaid .mmd to editable PowerPoint .pptx compiler",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "mmd2pptx": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "lint": "tsc --noEmit -p tsconfig.json"
+  },
+  "keywords": [
+    "mermaid",
+    "pptx",
+    "converter",
+    "diagram"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^11.1.0",
+    "dagre": "^0.8.5",
+    "js-yaml": "^4.1.0",
+    "pptxgenjs": "^3.12.0"
+  },
+  "devDependencies": {
+    "@types/dagre": "^0.7.52",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.3.0",
+    "tsx": "^3.14.0",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,17 @@
+%% title: 14-01-comments-and-styling.mmd
+flowchart LR
+  %% コメントは %% で始まる「単独行」
+  A[Normal] --> B[Styled]
+  B --> C[Classed]
+  C --> D[Default class]
+
+  style B fill:#f9f,stroke:#333,stroke-width:4px
+
+  classDef hot fill:#ff9,stroke:#333,stroke-width:4px
+  class C hot
+
+  classDef default fill:#eef,stroke:#333,stroke-width:2px
+
+  %% linkStyle（0-based index）+ default
+  linkStyle 1 stroke:#f00,stroke-width:4px,color:red
+  linkStyle default stroke:#999

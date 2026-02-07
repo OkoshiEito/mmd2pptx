@@ -1,0 +1,15 @@
+layout:
+  ranksep: 110
+  nodesep: 80
+
+nodes:
+  Start:
+    dx: -24
+  Decide:
+    w: 220
+  Finish:
+    dy: 18
+
+subgraphs:
+  Core:
+    padding: 34

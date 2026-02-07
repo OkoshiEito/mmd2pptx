@@ -1,0 +1,8 @@
+%% title: 13-05-subgraphs.mmd
+flowchart TB
+  %% Limitation: subgraph 内のノードが外部とリンクすると direction が親を継承
+  subgraph outer
+    direction LR
+    y1 --> y2 --> y3
+  end
+  y2 --> outside

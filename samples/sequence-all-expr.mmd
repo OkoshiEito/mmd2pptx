@@ -1,0 +1,80 @@
+sequenceDiagram
+  autonumber 1 1
+  box #EAF2FF App Layer
+    actor User as End User
+    participant FE as Frontend
+    boundary GW as API Gateway
+    control ORCH as Orchestrator
+    entity DOM as Domain Service
+    database DB as PostgreSQL
+    collections CACHE as Redis Cache
+    queue Q as Job Queue
+  end
+
+  links FE: {"Docs":"https://example.com/docs","Repo":"https://example.com/repo"}
+  link GW: API @ https://example.com/api
+
+  User ->>+ FE: open screen
+  FE -->>- User: screen ready
+  FE -> GW: request
+  GW --> FE: ack queued
+  GW -->>+ ORCH: dispatch
+  ORCH ->> DOM: validate
+  DOM --x ORCH: invalid state
+  ORCH -) GW: fallback route
+  GW --) FE: accepted
+  FE <<->> ORCH: sync state
+  ORCH <<-->> FE: sync result
+
+  Note right of FE: right note<br/>line2
+  Note left of GW: left note
+  Note over FE,ORCH: over two actors
+
+  activate ORCH
+  ORCH -> DOM: call
+  deactivate ORCH
+
+  create participant TMP as Temp Worker
+  ORCH ->> TMP: spawn
+  TMP -->> ORCH: spawned
+  destroy participant TMP
+  ORCH ->> TMP: terminate
+
+  loop Retry up to 3
+    ORCH ->> DOM: retry
+    DOM -->> ORCH: retry result
+  end
+
+  alt success
+    ORCH ->> FE: success response
+  else failure
+    ORCH ->> FE: failure response
+  end
+
+  opt feature flag on
+    FE ->> GW: optional request
+  end
+
+  par branch A
+    FE ->> Q: enqueue A
+  and branch B
+    FE ->> Q: enqueue B
+  end
+
+  critical payment transaction
+    FE ->> GW: charge
+  option idempotent retry
+    FE ->> GW: retry charge
+  end
+
+  break unexpected error
+    ORCH ->> FE: abort flow
+  end
+
+  rect rgba(180,220,255,0.25) highlighted segment
+    FE ->> GW: traced call
+    GW -->> FE: traced return
+  end
+
+  FE -xx-> FE
+  FE --> FE: self classic

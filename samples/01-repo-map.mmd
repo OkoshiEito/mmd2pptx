@@ -1,0 +1,118 @@
+%% Repo Map（リポジトリ地図）
+%% 作成日: 2026-02-07
+%% 参照: README, 入口ファイル, 主要ディレクトリ
+%% 抽象化: ディレクトリ中心 / 代表ファイルは各subgraph最大2 / flowchart TB 固定
+%% 依存矢印: ラベル必須 / 多重エッジ禁止 / 読取+書込は I/O（読取・書込）に統合
+%% 記法: ==>（主要フロー）, ~~~（整列用・非依存）
+%%{init: {'flowchart': {'nodeSpacing': 70, 'rankSpacing': 90, 'curve': 'linear'}}}%%
+flowchart TB
+
+classDef entry fill:#E3F2FD,stroke:#64B5F6,stroke-width:1px
+classDef app fill:#E0F7FA,stroke:#4DD0E1,stroke-width:1px
+classDef domain fill:#E8F5E9,stroke:#81C784,stroke-width:1px
+classDef infra fill:#FFF3E0,stroke:#FFB74D,stroke-width:1px
+classDef shared fill:#F3E5F5,stroke:#BA68C8,stroke-width:1px
+classDef config fill:#ECEFF1,stroke:#90A4AE,stroke-width:1px
+classDef res_db fill:#EDE7F6,stroke:#9575CD,stroke-width:1px
+classDef res_cache fill:#E8EAF6,stroke:#7986CB,stroke-width:1px
+classDef res_queue fill:#FFFDE7,stroke:#FFD54F,stroke-width:1px
+classDef res_external fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px
+classDef group_title fill:#FFFFFF,stroke:#B0BEC5,stroke-width:2px,font-weight:bold
+
+subgraph SG_ENTRY[" "]
+  direction TB
+  hdr_entry["ENTRY<br/>入口/起動点<br/>対応: frontend/src/app/, backend/websocket/websocket_server.py, backend/s3-events/src/main.py"]:::group_title
+  ep_front_ui["Frontend UI<br/>frontend/src/app/<br/>ユーザー操作を受け付ける"]:::entry
+  ep_ws_server["WebSocket Server<br/>backend/websocket/websocket_server.py<br/>接続要求を受け付ける"]:::entry
+  ep_s3_worker["S3 Event Worker<br/>backend/s3-events/src/main.py<br/>イベント処理を開始する"]:::entry
+end
+
+subgraph SG_APP[" "]
+  direction TB
+  hdr_app["APP<br/>アプリ層/ユースケース<br/>対応: frontend/src/contexts/, backend/websocket/src/api/, backend/s3-events/src/processors/"]:::group_title
+  app_front_orchestrator["Conversation Orchestrator<br/>frontend/src/contexts/WebSocketContext.tsx<br/>会話処理を調整する"]:::app
+  app_backend_api["Backend API Layer<br/>backend/websocket/src/api/ + backend/websocket/src/services/<br/>要求処理を調整する"]:::app
+  app_s3_processor["S3 Processor App<br/>backend/s3-events/src/processors/<br/>ファイル処理を調整する"]:::app
+end
+
+subgraph SG_DOMAIN[" "]
+  direction TB
+  hdr_domain["DOMAIN<br/>ドメイン/ビジネスルール<br/>対応: backend/websocket/src/usecases/, backend/websocket/src/agent/, src/pptx_pipeline/"]:::group_title
+  dom_agent_flow["Agent Workflow<br/>backend/websocket/src/usecases/ + backend/websocket/src/agent/<br/>議論ワークフローを実行する"]:::domain
+  dom_pptx_core["PPTX Pipeline<br/>src/pptx_pipeline/ + backend/websocket/src/usecases/pptx_roundtrip.py<br/>PPTX変換規則を適用する"]:::domain
+end
+
+subgraph SG_INFRA[" "]
+  direction TB
+  hdr_infra["INFRA<br/>インフラ/永続化/外部接続<br/>対応: backend/websocket/src/database/, backend/websocket/src/crud/, backend/*/src/file_handlers/"]:::group_title
+  inf_data_access["Data Access<br/>backend/websocket/src/database/ + backend/websocket/src/crud/<br/>永続データI/Oを実装する"]:::infra
+  inf_file_adapter["File Handler Adapter<br/>backend/*/src/file_handlers/<br/>外部ファイルI/Oを実装する"]:::infra
+end
+
+subgraph SG_SHARED[" "]
+  direction TB
+  hdr_shared["SHARED<br/>共通<br/>対応: frontend/src/lib/, backend/websocket/src/dependencies/, backend/websocket/src/core/security/"]:::group_title
+end
+
+subgraph SG_CONFIG[" "]
+  direction TB
+  hdr_config["CONFIG<br/>設定<br/>対応: frontend/.env.local.example, backend/websocket/.env.example, backend/s3-events/terraform/environments/"]:::group_title
+end
+
+res_db_postgresql[("DB(PostgreSQL)<br/>backend/websocket/src/database/<br/>永続化先として振る舞う")]:::res_db
+res_db_dynamodb[("DB(DynamoDB)<br/>backend/websocket/src/crud/*_dynamodb.py<br/>永続化先として振る舞う")]:::res_db
+res_queue_eventbridge[["Queue(EventBridge)<br/>backend/s3-events/terraform/modules/eventbridge/<br/>配信基盤として振る舞う"]]:::res_queue
+res_external_s3[/"External(S3)<br/>backend/*/src/file_handlers/<br/>ファイル保管先として振る舞う"/]:::res_external
+res_external_azure_openai[/"External(Azure OpenAI)<br/>backend/websocket/src/models/ + backend/s3-events/src/processors/<br/>推論先として振る舞う"/]:::res_external
+
+hdr_entry ~~~ hdr_app ~~~ hdr_domain ~~~ hdr_infra ~~~ hdr_shared ~~~ hdr_config
+hdr_config ~~~ res_db_postgresql ~~~ res_db_dynamodb ~~~ res_queue_eventbridge ~~~ res_external_s3 ~~~ res_external_azure_openai
+
+ep_front_ui ==>|HTTP| app_front_orchestrator
+ep_ws_server -->|呼出（import）| app_backend_api
+ep_s3_worker -->|呼出（import）| app_s3_processor
+
+app_front_orchestrator ==>|HTTP| app_backend_api
+app_front_orchestrator -->|呼出（import）| hdr_shared
+app_front_orchestrator -->|設定| hdr_config
+
+app_backend_api ==>|呼出| dom_agent_flow
+app_backend_api -->|呼出| dom_pptx_core
+app_backend_api -->|呼出| inf_data_access
+app_backend_api -->|呼出| inf_file_adapter
+app_backend_api -->|呼出（import）| hdr_shared
+app_backend_api -->|設定| hdr_config
+app_backend_api -.->|依存?| res_queue_eventbridge
+
+app_s3_processor -->|呼出| inf_file_adapter
+app_s3_processor -->|設定| hdr_config
+app_s3_processor -->|RPC| res_external_azure_openai
+
+dom_agent_flow ==>|RPC| res_external_azure_openai
+dom_agent_flow -->|呼出| inf_data_access
+dom_agent_flow -->|呼出| inf_file_adapter
+
+dom_pptx_core -->|呼出| inf_file_adapter
+
+inf_data_access -->|I/O（読取・書込）| res_db_postgresql
+inf_data_access -->|I/O（読取・書込）| res_db_dynamodb
+inf_file_adapter -->|I/O（読取・書込）| res_external_s3
+
+ep_s3_worker -->|消費| res_queue_eventbridge
+res_external_s3 -->|発行| res_queue_eventbridge
+
+subgraph SG_LEGEND[" "]
+  direction TB
+  hdr_legend["LEGEND<br/>図の読み方<br/>対応: 色分けと矢印ルール"]:::group_title
+  lg_color["Color<br/>entry/app/domain/infra/shared/config/res_*<br/>種別ごとに色分けする"]:::shared
+  lg_edge["Arrow<br/>-->確認 / -.->推定(依存?) / ==>主要フロー / ~~~整列用<br/>依存方向を明示する"]:::shared
+  lg_rule["Rule<br/>同一A→Bは1本のみ<br/>読取+書込はI/O（読取・書込）へ統合する"]:::shared
+end
+
+style SG_ENTRY fill:#FBFBFB,stroke:#DADADA,stroke-width:1px
+style SG_APP fill:#FBFBFB,stroke:#DADADA,stroke-width:1px
+style SG_DOMAIN fill:#FBFBFB,stroke:#DADADA,stroke-width:1px
+style SG_INFRA fill:#FBFBFB,stroke:#DADADA,stroke-width:1px
+style SG_SHARED fill:#FBFBFB,stroke:#DADADA,stroke-width:1px
+style SG_CONFIG fill:#FBFBFB,stroke:#DADADA,stroke-width:1px
+style SG_LEGEND fill:#FBFBFB,stroke:#DADADA,stroke-width:1px

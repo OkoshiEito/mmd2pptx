@@ -1,0 +1,112 @@
+%% Group Detail Flow（グルーピング詳細フロー）
+%% 作成日: 2026-02-07
+%% 対象: DOMAIN / backend/websocket/src/usecases/
+%% 入口: POST /api/v1/pptx/apply-updates（実体: backend/websocket/src/api/v1/user/pptx_roundtrip.py:apply_updates、未指定のため自動選定）
+%% 追跡方針: 深さ<=5 / コア<=18ノード / 分岐は主要1〜2箇所のみ
+%% ルール: 矢印ラベル必須 / 多重エッジ禁止 / 読取+書込はI/O統合 / 推定は点線+依存?
+%%{init: {'flowchart': {'nodeSpacing': 80, 'rankSpacing': 110}}}%%
+flowchart TB
+
+classDef scope fill:#FBFBFB,stroke:#DADADA,stroke-width:1px
+classDef title fill:#FFFFFF,stroke:#B0BEC5,stroke-width:2px,font-weight:bold
+
+classDef startend fill:#E3F2FD,stroke:#64B5F6,stroke-width:1px
+classDef core fill:#E0F7FA,stroke:#4DD0E1,stroke-width:1px
+classDef gate fill:#FFF3E0,stroke:#FFB74D,stroke-width:1px
+classDef decision fill:#FFFDE7,stroke:#FFD54F,stroke-width:1px
+
+classDef res_db fill:#EDE7F6,stroke:#9575CD,stroke-width:1px
+classDef res_cache fill:#E8EAF6,stroke:#7986CB,stroke-width:1px
+classDef res_queue fill:#FFFDE7,stroke:#FFD54F,stroke-width:1px
+classDef res_external fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px
+
+subgraph SG_SCOPE[" "]
+  direction TB
+  hdr_scope["DOMAIN<br/>ドメイン層/ユースケース<br/>対象: backend/websocket/src/usecases/"]
+  core_apply_updates_and_rebuild["更新再構築開始<br/>backend/websocket/src/usecases/pptx_roundtrip.py:apply_updates_and_rebuild<br/>更新処理を統括実行する"]
+  core_init_s3_handler["S3ハンドラ生成<br/>backend/websocket/src/usecases/pptx_roundtrip.py:_s3<br/>接続ハンドラを生成する"]
+  gate_s3_download_pptx["原本PPTX取得<br/>backend/websocket/src/file_handlers/s3_file_handler.py:download_file<br/>S3原本を読取する"]
+  core_apply_updates_bytes["更新適用処理<br/>backend/websocket/src/usecases/pptx_roundtrip.py:apply_updates_to_pptx_bytes<br/>更新済みPPTXを生成する"]
+  gate_pipeline_update_design["更新反映委譲<br/>backend/websocket/src/pptx_pipeline.py:update_design_with_llm_outputs<br/>共通更新へ委譲する"]
+  gate_pipeline_write_pptx["PPTX書出委譲<br/>backend/websocket/src/pptx_pipeline.py:write_pptx<br/>共通書出へ委譲する"]
+  core_generate_output_key["出力キー生成<br/>backend/websocket/src/usecases/pptx_roundtrip.py:apply_updates_and_rebuild<br/>保存キーを決定する"]
+  gate_s3_put_rebuilt_pptx["更新PPTX保存<br/>backend/websocket/src/usecases/pptx_roundtrip.py:s3_client.put_object<br/>更新PPTXを書込する"]
+  dec_update_catalog{カタログ更新?}
+  gate_pipeline_build_catalog["カタログ生成委譲<br/>backend/websocket/src/pptx_pipeline.py:build_shape_catalog<br/>共通抽出へ委譲する"]
+  core_generate_catalog_key["カタログキー生成<br/>backend/websocket/src/usecases/pptx_roundtrip.py:apply_updates_and_rebuild<br/>JSONキーを決定する"]
+  gate_s3_put_catalog["カタログJSON保存<br/>backend/websocket/src/usecases/pptx_roundtrip.py:s3_client.put_object<br/>要約JSONを書込する"]
+  core_build_apply_result["結果DTO組立<br/>backend/websocket/src/usecases/pptx_roundtrip.py:ApplyUpdatesResult<br/>応答DTOを組み立てる"]
+end
+
+res_ext[/External API/]
+
+start_http_apply_updates([開始])
+in_user_apply_updates["更新API受付<br/>backend/websocket/src/api/v1/user/pptx_roundtrip.py:apply_updates<br/>要求を受け付けて委譲する"]
+end_http_apply_updates([終了])
+
+start_http_apply_updates -->|HTTP| in_user_apply_updates
+in_user_apply_updates -->|呼出| core_apply_updates_and_rebuild
+core_apply_updates_and_rebuild -->|生成| core_init_s3_handler
+core_init_s3_handler -->|呼出| gate_s3_download_pptx
+gate_s3_download_pptx -->|HTTP| res_ext
+gate_s3_download_pptx -->|取得| core_apply_updates_bytes
+core_apply_updates_bytes -->|更新| gate_pipeline_update_design
+gate_pipeline_update_design -->|書込| gate_pipeline_write_pptx
+gate_pipeline_write_pptx -->|生成| core_generate_output_key
+core_generate_output_key -->|書込| gate_s3_put_rebuilt_pptx
+gate_s3_put_rebuilt_pptx -->|HTTP| res_ext
+gate_s3_put_rebuilt_pptx -->|分岐| dec_update_catalog
+dec_update_catalog -->|はい| gate_pipeline_build_catalog
+dec_update_catalog -->|いいえ| core_build_apply_result
+gate_pipeline_build_catalog -->|生成| core_generate_catalog_key
+core_generate_catalog_key -->|書込| gate_s3_put_catalog
+gate_s3_put_catalog -->|HTTP| res_ext
+gate_s3_put_catalog -->|更新| core_build_apply_result
+core_build_apply_result -->|HTTP| end_http_apply_updates
+
+class hdr_scope title
+class start_http_apply_updates,end_http_apply_updates startend
+class in_user_apply_updates core
+class core_apply_updates_and_rebuild,core_init_s3_handler,core_apply_updates_bytes,core_generate_output_key,core_generate_catalog_key,core_build_apply_result core
+class gate_s3_download_pptx,gate_pipeline_update_design,gate_pipeline_write_pptx,gate_s3_put_rebuilt_pptx,gate_pipeline_build_catalog,gate_s3_put_catalog gate
+class dec_update_catalog decision
+class res_ext res_external
+
+style SG_SCOPE fill:#FBFBFB,stroke:#DADADA,stroke-width:1px
+
+subgraph SG_LEGEND[" "]
+  direction TB
+  hdr_legend["LEGEND<br/>図の読み方<br/>対応: ルール全体"]
+  lg_rule_labels["矢印ラベル必須<br/>rule/edges<br/>全矢印へラベルを付ける"]
+  lg_rule_merge["多重エッジ禁止<br/>rule/io-merge<br/>I/O統合で一本化する"]
+  lg_rule_guess["推定表現<br/>rule/dependency<br/>点線と依存?のみ使う"]
+  lg_rule_color["色の意味<br/>rule/colors<br/>core gate resを識別する"]
+end
+
+hdr_legend -->|呼出| lg_rule_labels
+lg_rule_labels -->|呼出| lg_rule_merge
+lg_rule_merge -->|呼出| lg_rule_guess
+lg_rule_guess -->|呼出| lg_rule_color
+lg_rule_guess -.->|依存?| lg_rule_labels
+
+class hdr_legend title
+class lg_rule_labels,lg_rule_merge,lg_rule_guess,lg_rule_color scope
+
+%% ---- Node Catalog (id -> path -> responsibility -> key symbols) ----
+%% start_http_apply_updates -> backend/websocket/src/api/v1/user/pptx_roundtrip.py -> 要求処理を開始する -> POST /api/v1/pptx/apply-updates
+%% in_user_apply_updates -> backend/websocket/src/api/v1/user/pptx_roundtrip.py:apply_updates -> 要求を受け付けて委譲する -> ApplyUpdatesRequest, apply_updates_and_rebuild
+%% core_apply_updates_and_rebuild -> backend/websocket/src/usecases/pptx_roundtrip.py:apply_updates_and_rebuild -> 更新処理を統括実行する -> apply_updates_and_rebuild()
+%% core_init_s3_handler -> backend/websocket/src/usecases/pptx_roundtrip.py:_s3 -> 接続ハンドラを生成する -> S3FileHandler, settings.AWS_S3_BUCKET
+%% gate_s3_download_pptx -> backend/websocket/src/file_handlers/s3_file_handler.py:download_file -> S3原本を読取する -> get_object(), Body.read()
+%% core_apply_updates_bytes -> backend/websocket/src/usecases/pptx_roundtrip.py:apply_updates_to_pptx_bytes -> 更新済みPPTXを生成する -> update_design_with_llm_outputs(), write_pptx()
+%% gate_pipeline_update_design -> backend/websocket/src/pptx_pipeline.py:update_design_with_llm_outputs -> 共通更新へ委譲する -> PowerPointUpdate.from_obj
+%% gate_pipeline_write_pptx -> backend/websocket/src/pptx_pipeline.py:write_pptx -> 共通書出へ委譲する -> Presentation.save()
+%% core_generate_output_key -> backend/websocket/src/usecases/pptx_roundtrip.py:apply_updates_and_rebuild -> 保存キーを決定する -> output_prefix, updated.sha256
+%% gate_s3_put_rebuilt_pptx -> backend/websocket/src/usecases/pptx_roundtrip.py:s3_client.put_object -> 更新PPTXを書込する -> ContentType:presentationml
+%% dec_update_catalog -> backend/websocket/src/usecases/pptx_roundtrip.py:apply_updates_and_rebuild -> カタログ更新を分岐する -> also_update_catalog, updated.catalog
+%% gate_pipeline_build_catalog -> backend/websocket/src/pptx_pipeline.py:build_shape_catalog -> 共通抽出へ委譲する -> ShapeCatalog.to_dict()
+%% core_generate_catalog_key -> backend/websocket/src/usecases/pptx_roundtrip.py:apply_updates_and_rebuild -> JSONキーを決定する -> catalog_prefix, updated.sha256
+%% gate_s3_put_catalog -> backend/websocket/src/usecases/pptx_roundtrip.py:s3_client.put_object -> 要約JSONを書込する -> ContentType:application/json
+%% core_build_apply_result -> backend/websocket/src/usecases/pptx_roundtrip.py:ApplyUpdatesResult -> 応答DTOを組み立てる -> new_pptx_key, new_sha256, catalog_key
+%% end_http_apply_updates -> backend/websocket/src/api/v1/user/pptx_roundtrip.py -> 成功応答で処理を終える -> ApplyUpdatesResponse
+%% res_ext -> external/aws/s3 -> 外部オブジェクトI/Oを処理する -> S3 API

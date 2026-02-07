@@ -1,0 +1,9 @@
+flowchart TD
+  subgraph Core[Core Services]
+    Start([開始]) --> Decide{条件は?}
+    Decide -->|Yes| DoWork[/処理する/]
+    Decide -->|No| Skip[スキップ]
+  end
+
+  DoWork --> Finish((完了))
+  Skip -.-> Finish
