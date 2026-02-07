@@ -1,6 +1,7 @@
 import dagre from "dagre";
 import type { DiagramDirection, DiagramIr, EdgeSide, LayoutConfig, Point } from "../types.js";
 import { recomputeBounds, recomputeSubgraphBounds } from "./geometry.js";
+import { evaluateReadability } from "../quality/readability.js";
 
 interface LayoutOptions {
   targetAspectRatio?: number;
@@ -807,6 +808,61 @@ function optimizeNodePlacement(
       }
     }
 
+    // Reduce diagonal skew when many nodes concentrate in opposite quadrants
+    // (e.g. upper-right + lower-left), which leaves other quadrants underused.
+    let meanX = 0;
+    let meanY = 0;
+    for (let i = 0; i < allNodes.length; i += 1) {
+      meanX += centersX[i];
+      meanY += centersY[i];
+    }
+    meanX /= allNodes.length;
+    meanY /= allNodes.length;
+
+    let varX = 0;
+    let varY = 0;
+    let cov = 0;
+    for (let i = 0; i < allNodes.length; i += 1) {
+      const dx = centersX[i] - meanX;
+      const dy = centersY[i] - meanY;
+      varX += dx * dx;
+      varY += dy * dy;
+      cov += dx * dy;
+    }
+
+    if (varX > 1e-3 && varY > 1e-3) {
+      const corr = cov / Math.sqrt(varX * varY);
+      if (Math.abs(corr) > 0.28) {
+        const base = clamp((Math.abs(corr) - 0.28) * 14, 0.9, 6.5);
+        const tempScale = clamp(0.5 + temperature / 80, 0.5, 1.35);
+        const skewForce = base * tempScale;
+
+        if (rankdir === "TB" || rankdir === "BT") {
+          const stdX = Math.sqrt(varX / Math.max(1, allNodes.length));
+          const safeStdX = Math.max(1, stdX);
+          for (const node of movableNodes) {
+            const idx = nodeIndexById.get(node.id);
+            if (idx === undefined) {
+              continue;
+            }
+            const normX = (centersX[idx] - meanX) / safeStdX;
+            fy[idx] += -corr * normX * skewForce;
+          }
+        } else {
+          const stdY = Math.sqrt(varY / Math.max(1, allNodes.length));
+          const safeStdY = Math.max(1, stdY);
+          for (const node of movableNodes) {
+            const idx = nodeIndexById.get(node.id);
+            if (idx === undefined) {
+              continue;
+            }
+            const normY = (centersY[idx] - meanY) / safeStdY;
+            fx[idx] += -corr * normY * skewForce;
+          }
+        }
+      }
+    }
+
     if ((iter + 1) % 3 === 0) {
       applyCrossingNudges(indexedEdges, centersX, centersY, movableNodeIndices, fx, fy, Math.max(1.5, temperature * 0.14));
     }
@@ -1347,6 +1403,38 @@ function translateNodeSet(ir: DiagramIr, nodeIds: Set<string>, dx: number, dy: n
   return moved;
 }
 
+function quadrantImbalanceOfNodeArea(ir: DiagramIr): number {
+  const nodes = ir.nodes.filter((node) => !node.isJunction);
+  if (nodes.length === 0) {
+    return 0;
+  }
+
+  const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
+  const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
+  const areaByQuadrant = [0, 0, 0, 0];
+
+  for (const node of nodes) {
+    const centerX = node.x + node.width / 2;
+    const centerY = node.y + node.height / 2;
+    const quadrant = (centerY >= cy ? 2 : 0) + (centerX >= cx ? 1 : 0);
+    areaByQuadrant[quadrant] += node.width * node.height;
+  }
+
+  const total = areaByQuadrant.reduce((sum, area) => sum + area, 0);
+  if (total <= 0) {
+    return 0;
+  }
+
+  const mean = total / 4;
+  if (mean <= 0) {
+    return 0;
+  }
+
+  const min = Math.min(...areaByQuadrant);
+  const max = Math.max(...areaByQuadrant);
+  return (max - min) / mean;
+}
+
 function enforceTopLevelSubgraphSeparation(ir: DiagramIr, layoutConfig: LayoutConfig, passes: number = 8): boolean {
   if (ir.subgraphs.length < 2) {
     return false;
@@ -1484,6 +1572,395 @@ function enforceSpatialConstraints(ir: DiagramIr, layoutConfig: LayoutConfig, pa
     moved = true;
   }
   return moved;
+}
+
+function reduceDiagonalSkew(
+  ir: DiagramIr,
+  rankdir: Rankdir,
+  layoutConfig: LayoutConfig,
+): boolean {
+  const nodes = ir.nodes.filter((node) => !node.isJunction);
+  if (nodes.length < 8) {
+    return false;
+  }
+
+  recomputeSubgraphBounds(ir);
+  recomputeBounds(ir);
+
+  const computeCorrAndImbalance = (): { corr: number; imbalance: number } => {
+    const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
+    const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
+
+    let meanX = 0;
+    let meanY = 0;
+    for (const node of nodes) {
+      meanX += node.x + node.width / 2;
+      meanY += node.y + node.height / 2;
+    }
+    meanX /= nodes.length;
+    meanY /= nodes.length;
+
+    let varX = 0;
+    let varY = 0;
+    let cov = 0;
+    const quadrantArea = [0, 0, 0, 0];
+    for (const node of nodes) {
+      const nx = node.x + node.width / 2;
+      const ny = node.y + node.height / 2;
+      const dx = nx - meanX;
+      const dy = ny - meanY;
+      varX += dx * dx;
+      varY += dy * dy;
+      cov += dx * dy;
+
+      const quadrant = (ny >= cy ? 2 : 0) + (nx >= cx ? 1 : 0);
+      quadrantArea[quadrant] += node.width * node.height;
+    }
+
+    const corr = varX > 1e-6 && varY > 1e-6 ? cov / Math.sqrt(varX * varY) : 0;
+    const totalArea = quadrantArea.reduce((sum, value) => sum + value, 0);
+    const meanArea = totalArea > 0 ? totalArea / 4 : 0;
+    const imbalance =
+      meanArea > 0 ? (Math.max(...quadrantArea) - Math.min(...quadrantArea)) / meanArea : 0;
+    return { corr, imbalance };
+  };
+
+  const before = computeCorrAndImbalance();
+  if (Math.abs(before.corr) < 0.42 || before.imbalance < 1.25) {
+    return false;
+  }
+
+  const beforeState = captureLayoutState(ir);
+  const beforeObjective =
+    scoreLayoutQuality(ir, rankdir, layoutConfig) + before.imbalance * 2600 + Math.abs(before.corr) * 900;
+
+  const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
+  const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
+  const spanX = Math.max(1, ir.bounds.width);
+  const spanY = Math.max(1, ir.bounds.height);
+  const baseAmplitude =
+    clamp(Math.min(ir.bounds.width, ir.bounds.height) * 0.07, 20, 120) * clamp(Math.abs(before.corr), 0.45, 1);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    restoreLayoutState(ir, beforeState);
+    const amplitude = baseAmplitude * (attempt === 0 ? 1 : attempt === 1 ? 0.62 : 0.38);
+
+    for (const node of nodes) {
+      const nx = node.x + node.width / 2;
+      const ny = node.y + node.height / 2;
+      if (rankdir === "TB" || rankdir === "BT") {
+        const normX = (nx - cx) / spanX;
+        node.y += -before.corr * normX * amplitude;
+      } else {
+        const normY = (ny - cy) / spanY;
+        node.x += -before.corr * normY * amplitude;
+      }
+    }
+
+    enforceSpatialConstraints(ir, layoutConfig, 10);
+    inferEdgeSideHints(ir, rankdir);
+    rebuildEdgeRoutesFromSideAnchors(ir);
+    recomputeSubgraphBounds(ir);
+    recomputeBounds(ir);
+
+    const after = computeCorrAndImbalance();
+    const afterObjective =
+      scoreLayoutQuality(ir, rankdir, layoutConfig) + after.imbalance * 2600 + Math.abs(after.corr) * 900;
+
+    const improvedCorr = Math.abs(after.corr) + 1e-6 < Math.abs(before.corr) * 0.9;
+    const improvedImbalance = after.imbalance + 1e-6 < before.imbalance * 0.9;
+    if ((improvedCorr || improvedImbalance) && afterObjective + 1e-6 < beforeObjective) {
+      return true;
+    }
+  }
+
+  restoreLayoutState(ir, beforeState);
+  return false;
+}
+
+function rebalanceQuadrantCoverage(
+  ir: DiagramIr,
+  rankdir: Rankdir,
+  layoutConfig: LayoutConfig,
+): boolean {
+  const nodes = ir.nodes.filter((node) => !node.isJunction);
+  if (nodes.length < 8) {
+    return false;
+  }
+
+  recomputeSubgraphBounds(ir);
+  recomputeBounds(ir);
+
+  const computeState = (): {
+    imbalance: number;
+    quadrantArea: [number, number, number, number];
+    leftArea: number;
+    rightArea: number;
+    topArea: number;
+    bottomArea: number;
+  } => {
+    const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
+    const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
+    const quadrantArea: [number, number, number, number] = [0, 0, 0, 0];
+
+    for (const node of nodes) {
+      const nx = node.x + node.width / 2;
+      const ny = node.y + node.height / 2;
+      const quadrant = (ny >= cy ? 2 : 0) + (nx >= cx ? 1 : 0);
+      quadrantArea[quadrant] += node.width * node.height;
+    }
+
+    const total = quadrantArea[0] + quadrantArea[1] + quadrantArea[2] + quadrantArea[3];
+    const mean = total > 0 ? total / 4 : 0;
+    const imbalance =
+      mean > 0 ? (Math.max(...quadrantArea) - Math.min(...quadrantArea)) / mean : 0;
+    const leftArea = quadrantArea[0] + quadrantArea[2];
+    const rightArea = quadrantArea[1] + quadrantArea[3];
+    const topArea = quadrantArea[0] + quadrantArea[1];
+    const bottomArea = quadrantArea[2] + quadrantArea[3];
+
+    return {
+      imbalance,
+      quadrantArea,
+      leftArea,
+      rightArea,
+      topArea,
+      bottomArea,
+    };
+  };
+
+  const before = computeState();
+  if (before.imbalance < 1.3) {
+    return false;
+  }
+
+  const totalArea = before.leftArea + before.rightArea;
+  if (totalArea <= 0) {
+    return false;
+  }
+
+  const pressureX = clamp((before.leftArea - before.rightArea) / totalArea, -0.9, 0.9);
+  const pressureY = clamp((before.topArea - before.bottomArea) / totalArea, -0.9, 0.9);
+  if (Math.abs(pressureX) < 0.08 && Math.abs(pressureY) < 0.08) {
+    return false;
+  }
+
+  const beforeState = captureLayoutState(ir);
+  const beforeObjective = scoreLayoutQuality(ir, rankdir, layoutConfig) + before.imbalance * 2800;
+  const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
+  const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
+  const spanX = Math.max(1, ir.bounds.width);
+  const spanY = Math.max(1, ir.bounds.height);
+  const baseShift = clamp(Math.min(ir.bounds.width, ir.bounds.height) * 0.04, 14, 64);
+
+  const tryScales = [1, 0.62, 0.36];
+  for (const scale of tryScales) {
+    restoreLayoutState(ir, beforeState);
+
+    let moved = false;
+    for (const node of nodes) {
+      const nx = node.x + node.width / 2;
+      const ny = node.y + node.height / 2;
+      const weightX = clamp(0.65 + (Math.abs(nx - cx) / spanX) * 2.8, 0.65, 1.9);
+      const weightY = clamp(0.65 + (Math.abs(ny - cy) / spanY) * 2.8, 0.65, 1.9);
+
+      let dx = 0;
+      let dy = 0;
+      if (pressureX > 0 && nx < cx) {
+        dx = pressureX * baseShift * scale * weightX;
+      } else if (pressureX < 0 && nx > cx) {
+        dx = pressureX * baseShift * scale * weightX;
+      }
+
+      if (pressureY > 0 && ny < cy) {
+        dy = pressureY * baseShift * scale * weightY;
+      } else if (pressureY < 0 && ny > cy) {
+        dy = pressureY * baseShift * scale * weightY;
+      }
+
+      if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+        node.x += dx;
+        node.y += dy;
+        moved = true;
+      }
+    }
+
+    if (!moved) {
+      continue;
+    }
+
+    enforceSpatialConstraints(ir, layoutConfig, 10);
+    inferEdgeSideHints(ir, rankdir);
+    rebuildEdgeRoutesFromSideAnchors(ir);
+    recomputeSubgraphBounds(ir);
+    recomputeBounds(ir);
+
+    const after = computeState();
+    const afterObjective = scoreLayoutQuality(ir, rankdir, layoutConfig) + after.imbalance * 2800;
+    const improvedImbalance = after.imbalance + 1e-6 < before.imbalance * 0.88;
+    const acceptableQuality = afterObjective <= beforeObjective * 1.08;
+    if (improvedImbalance && acceptableQuality) {
+      return true;
+    }
+  }
+
+  restoreLayoutState(ir, beforeState);
+  return false;
+}
+
+function promoteUnderfilledQuadrant(
+  ir: DiagramIr,
+  rankdir: Rankdir,
+  layoutConfig: LayoutConfig,
+): boolean {
+  const nodes = ir.nodes.filter((node) => !node.isJunction);
+  if (nodes.length < 8) {
+    return false;
+  }
+
+  recomputeSubgraphBounds(ir);
+  recomputeBounds(ir);
+
+  const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
+  const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
+  const quadrantOf = (nx: number, ny: number): 0 | 1 | 2 | 3 =>
+    ((ny >= cy ? 2 : 0) + (nx >= cx ? 1 : 0)) as 0 | 1 | 2 | 3;
+
+  const areaByQuadrant: [number, number, number, number] = [0, 0, 0, 0];
+  for (const node of nodes) {
+    const nx = node.x + node.width / 2;
+    const ny = node.y + node.height / 2;
+    areaByQuadrant[quadrantOf(nx, ny)] += node.width * node.height;
+  }
+
+  const totalArea = areaByQuadrant[0] + areaByQuadrant[1] + areaByQuadrant[2] + areaByQuadrant[3];
+  if (totalArea <= 0) {
+    return false;
+  }
+  const meanArea = totalArea / 4;
+  const minArea = Math.min(...areaByQuadrant);
+  const maxArea = Math.max(...areaByQuadrant);
+  const beforeImbalance = meanArea > 0 ? (maxArea - minArea) / meanArea : 0;
+  if (beforeImbalance < 1.45) {
+    return false;
+  }
+
+  const underQuadrant = areaByQuadrant.indexOf(minArea) as 0 | 1 | 2 | 3;
+  const targetArea = meanArea * 0.72;
+  if (areaByQuadrant[underQuadrant] >= targetArea) {
+    return false;
+  }
+  const beforeState = captureLayoutState(ir);
+  const beforeReadPenalty = evaluateReadability(ir).penalty;
+  const beforeObjective = beforeReadPenalty + beforeImbalance * 5200;
+
+  const needsRight = (underQuadrant & 1) === 1;
+  const needsBottom = (underQuadrant & 2) === 2;
+
+  const candidates = nodes
+    .map((node) => {
+      const nx = node.x + node.width / 2;
+      const ny = node.y + node.height / 2;
+      const quadrant = quadrantOf(nx, ny);
+      if (quadrant === underQuadrant) {
+        return undefined;
+      }
+
+      let dx = 0;
+      let dy = 0;
+      const margin = Math.max(22, Math.min(64, Math.min(node.width, node.height) * 0.4));
+
+      if (needsRight && nx < cx) {
+        dx = cx - nx + margin;
+      } else if (!needsRight && nx > cx) {
+        dx = cx - nx - margin;
+      }
+
+      if (needsBottom && ny < cy) {
+        dy = cy - ny + margin;
+      } else if (!needsBottom && ny > cy) {
+        dy = cy - ny - margin;
+      }
+
+      if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
+        return undefined;
+      }
+
+      const degree = ir.edges.reduce((count, edge) => count + (edge.from === node.id || edge.to === node.id ? 1 : 0), 0);
+      const moveCost = Math.hypot(dx, dy);
+      const area = node.width * node.height;
+      const priority = (moveCost / Math.max(1, Math.sqrt(area))) * (1 + degree * 0.9);
+      return {
+        node,
+        area,
+        dx,
+        dy,
+        degree,
+        priority,
+      };
+    })
+    .filter(
+      (item): item is {
+        node: DiagramIr["nodes"][number];
+        area: number;
+        dx: number;
+        dy: number;
+        degree: number;
+        priority: number;
+      } =>
+        Boolean(item),
+    )
+    .sort((a, b) => a.priority - b.priority);
+
+  if (candidates.length === 0) {
+    return false;
+  }
+
+  const candidatePool = candidates.slice(0, Math.min(6, candidates.length));
+  const scales = [1, 0.72, 0.5];
+  let bestState: LayoutState | undefined;
+  let bestObjective = Number.POSITIVE_INFINITY;
+
+  for (const candidate of candidatePool) {
+    for (const scale of scales) {
+      restoreLayoutState(ir, beforeState);
+      candidate.node.x += candidate.dx * scale;
+      candidate.node.y += candidate.dy * scale;
+
+      enforceSpatialConstraints(ir, layoutConfig, 12);
+      inferEdgeSideHints(ir, rankdir);
+      rebuildEdgeRoutesFromSideAnchors(ir);
+      recomputeSubgraphBounds(ir);
+      recomputeBounds(ir);
+
+      const afterAreaByQuadrant: [number, number, number, number] = [0, 0, 0, 0];
+      for (const node of nodes) {
+        const nx = node.x + node.width / 2;
+        const ny = node.y + node.height / 2;
+        afterAreaByQuadrant[quadrantOf(nx, ny)] += node.width * node.height;
+      }
+
+      const afterMin = Math.min(...afterAreaByQuadrant);
+      const afterMax = Math.max(...afterAreaByQuadrant);
+      const afterImbalance = meanArea > 0 ? (afterMax - afterMin) / meanArea : 0;
+      const afterReadPenalty = evaluateReadability(ir).penalty;
+      const afterObjective = afterReadPenalty + afterImbalance * 5200 + candidate.degree * 260;
+      const improvedImbalance = afterImbalance + 1e-6 < beforeImbalance * 0.93;
+      const acceptableReadability = afterReadPenalty <= beforeReadPenalty * 1.06;
+
+      if (improvedImbalance && acceptableReadability && afterObjective < bestObjective) {
+        bestObjective = afterObjective;
+        bestState = captureLayoutState(ir);
+      }
+    }
+  }
+
+  if (!bestState) {
+    restoreLayoutState(ir, beforeState);
+    return false;
+  }
+  restoreLayoutState(ir, bestState);
+  return true;
 }
 
 function fitLayoutToTargetAspect(
@@ -1666,6 +2143,7 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir, layoutConfig: Layou
   const occupancyRatio = nodeArea / boundsArea;
   const overcrowdedPenalty = Math.max(0, occupancyRatio - 0.2) * 9000;
   const sparsePenalty = Math.max(0, 0.12 - occupancyRatio) * 12000;
+  const quadrantImbalancePenalty = quadrantImbalanceOfNodeArea(ir) * 2200;
 
   return (
     nodeOverlapPenalty * 9.2 +
@@ -1676,7 +2154,8 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir, layoutConfig: Layou
     edgeLengthPenalty * 0.11 +
     bendPenalty * 22 +
     overcrowdedPenalty +
-    sparsePenalty
+    sparsePenalty +
+    quadrantImbalancePenalty
   );
 }
 
@@ -1920,6 +2399,27 @@ function applyLayout(ir: DiagramIr, targetAspectRatio?: number): void {
   );
   const movedByCompaction = compactLayoutDensity(ir, rankdir, effectiveLayout, 10);
   if (movedBySubgraphConstraint || movedByCollision || movedByCompaction) {
+    enforceSpatialConstraints(ir, effectiveLayout, 10);
+    inferEdgeSideHints(ir, rankdir);
+    rebuildEdgeRoutesFromSideAnchors(ir);
+  }
+
+  const movedBySkewReduction = reduceDiagonalSkew(ir, rankdir, effectiveLayout);
+  if (movedBySkewReduction) {
+    enforceSpatialConstraints(ir, effectiveLayout, 10);
+    inferEdgeSideHints(ir, rankdir);
+    rebuildEdgeRoutesFromSideAnchors(ir);
+  }
+
+  const movedByQuadrantRebalance = rebalanceQuadrantCoverage(ir, rankdir, effectiveLayout);
+  if (movedByQuadrantRebalance) {
+    enforceSpatialConstraints(ir, effectiveLayout, 10);
+    inferEdgeSideHints(ir, rankdir);
+    rebuildEdgeRoutesFromSideAnchors(ir);
+  }
+
+  const movedByQuadrantPromotion = promoteUnderfilledQuadrant(ir, rankdir, effectiveLayout);
+  if (movedByQuadrantPromotion) {
     enforceSpatialConstraints(ir, effectiveLayout, 10);
     inferEdgeSideHints(ir, rankdir);
     rebuildEdgeRoutesFromSideAnchors(ir);
