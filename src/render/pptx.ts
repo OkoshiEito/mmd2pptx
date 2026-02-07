@@ -253,6 +253,9 @@ export async function renderPptx(ir: DiagramIr, options: RenderOptions): Promise
   }
 
   for (const edge of ir.edges) {
+    if (edge.style.lineStyle === "invisible") {
+      continue;
+    }
     if (edge.points.length < 2) {
       continue;
     }

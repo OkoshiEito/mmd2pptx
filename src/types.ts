@@ -47,7 +47,7 @@ export type NodeShape =
   | "donut"
   | "summingJunction";
 
-export type EdgeLineStyle = "solid" | "dotted" | "thick";
+export type EdgeLineStyle = "solid" | "dotted" | "thick" | "invisible";
 
 export type ArrowType = "none" | "start" | "end" | "both";
 

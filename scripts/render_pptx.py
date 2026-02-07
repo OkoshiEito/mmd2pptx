@@ -384,13 +384,19 @@ def apply_line_style(line: Any, style: dict[str, Any]) -> None:
     width = float(style.get("width", 1.3))
     line_style = style.get("lineStyle", "solid")
 
-    if line_style == "thick":
+    if line_style == "invisible":
+        width = 0.1
+    elif line_style == "thick":
         width = max(width * 2.3, 2.8)
     elif line_style == "dotted":
         width = max(width, 1.8)
 
     line.width = Pt(width)
     line.color.rgb = to_rgb(style.get("color", "1E293B"))
+    if line_style == "invisible":
+        line.transparency = 1.0
+        line.dash_style = MSO_LINE_DASH_STYLE.SOLID
+        return
 
     if line_style == "dotted":
         line.dash_style = MSO_LINE_DASH_STYLE.SQUARE_DOT

@@ -501,7 +501,13 @@ function parseStyleStatement(raw: string): { id: string; styles: Record<string, 
 }
 
 function mapEdgeOperator(op: string): { style: EdgeLineStyle; arrow: ArrowType } {
-  const style: EdgeLineStyle = op.includes(".") ? "dotted" : op.includes("=") ? "thick" : "solid";
+  const style: EdgeLineStyle = op.includes("~")
+    ? "invisible"
+    : op.includes(".")
+      ? "dotted"
+      : op.includes("=")
+        ? "thick"
+        : "solid";
   const hasStart = op.startsWith("<");
   const hasEnd = op.endsWith(">");
   const arrow: ArrowType = hasStart && hasEnd ? "both" : hasStart ? "start" : hasEnd ? "end" : "none";
@@ -545,11 +551,13 @@ function parseInlineLabeledArrow(
     return null;
   }
 
-  const style: EdgeLineStyle = `${leftOp}${rightOp}`.includes(".")
-    ? "dotted"
-    : `${leftOp}${rightOp}`.includes("=")
-      ? "thick"
-      : "solid";
+  const style: EdgeLineStyle = `${leftOp}${rightOp}`.includes("~")
+    ? "invisible"
+    : `${leftOp}${rightOp}`.includes(".")
+      ? "dotted"
+      : `${leftOp}${rightOp}`.includes("=")
+        ? "thick"
+        : "solid";
   const hasStart = rightOp.includes("<");
   const hasEnd = rightOp.includes(">");
   const arrow: ArrowType = hasStart && hasEnd ? "both" : hasStart ? "start" : hasEnd ? "end" : "none";
