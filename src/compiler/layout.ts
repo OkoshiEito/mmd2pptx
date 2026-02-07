@@ -1425,7 +1425,9 @@ function compactLayoutDensity(ir: DiagramIr, rankdir: Rankdir, layoutConfig: Lay
   }
 
   let moved = false;
-  const targetOccupancy = 0.1;
+  const nodeLoad = clamp((nodes.length - 10) / 42, 0, 1);
+  const edgeLoad = clamp((ir.edges.length - Math.max(6, nodes.length)) / Math.max(14, nodes.length * 1.7), 0, 1);
+  const targetOccupancy = 0.112 + (nodeLoad * 0.45 + edgeLoad * 0.55) * 0.03;
   for (let pass = 0; pass < passes; pass += 1) {
     recomputeSubgraphBounds(ir);
     recomputeBounds(ir);
@@ -1481,6 +1483,107 @@ function enforceSpatialConstraints(ir: DiagramIr, layoutConfig: LayoutConfig, pa
     }
     moved = true;
   }
+  return moved;
+}
+
+function fitLayoutToTargetAspect(
+  ir: DiagramIr,
+  targetAspectRatio: number,
+  rankdir: Rankdir,
+  layoutConfig: LayoutConfig,
+  passes: number = 8,
+): boolean {
+  const nodes = ir.nodes.filter((node) => !node.isJunction);
+  if (nodes.length <= 1) {
+    return false;
+  }
+
+  const target = clampAspect(targetAspectRatio);
+  let moved = false;
+
+  for (let pass = 0; pass < passes; pass += 1) {
+    recomputeSubgraphBounds(ir);
+    recomputeBounds(ir);
+
+    const aspect = diagramAspect(ir);
+    const ratio = aspect / target;
+    const beforeDeviation = Math.abs(Math.log(Math.max(1e-6, ratio)));
+    if (beforeDeviation <= 0.012) {
+      break;
+    }
+
+    const beforeState = captureLayoutState(ir);
+    const beforeQuality = scoreLayoutQuality(ir, rankdir, layoutConfig);
+    const beforeObjective = beforeQuality + beforeDeviation * 15000;
+    const baseCompress = clamp(beforeDeviation * 0.55, 0.04, 0.24);
+
+    let accepted = false;
+    let attemptScale = 1;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      restoreLayoutState(ir, beforeState);
+
+      const compressStrength = baseCompress * attemptScale;
+      let scaleX = 1;
+      let scaleY = 1;
+
+      if (ratio > 1.015) {
+        // Too wide for the requested slide aspect: compress X first.
+        scaleX = 1 - compressStrength;
+      } else if (ratio < 0.985) {
+        // Too tall for the requested slide aspect: compress Y first.
+        scaleY = 1 - compressStrength;
+      } else {
+        break;
+      }
+
+      const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
+      const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
+
+      let movedThisPass = false;
+      for (const node of nodes) {
+        const nodeCx = node.x + node.width / 2;
+        const nodeCy = node.y + node.height / 2;
+        const nextCx = cx + (nodeCx - cx) * scaleX;
+        const nextCy = cy + (nodeCy - cy) * scaleY;
+        const dx = nextCx - nodeCx;
+        const dy = nextCy - nodeCy;
+        if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) {
+          continue;
+        }
+        node.x += dx;
+        node.y += dy;
+        movedThisPass = true;
+      }
+
+      if (!movedThisPass) {
+        break;
+      }
+
+      enforceSpatialConstraints(ir, layoutConfig, 8);
+      inferEdgeSideHints(ir, rankdir);
+      rebuildEdgeRoutesFromSideAnchors(ir);
+      recomputeSubgraphBounds(ir);
+      recomputeBounds(ir);
+
+      const afterDeviation = Math.abs(Math.log(Math.max(1e-6, diagramAspect(ir) / target)));
+      const afterQuality = scoreLayoutQuality(ir, rankdir, layoutConfig);
+      const afterObjective = afterQuality + afterDeviation * 15000;
+
+      if (afterObjective + 1e-6 < beforeObjective || afterDeviation + 1e-6 < beforeDeviation * 0.92) {
+        accepted = true;
+        moved = true;
+        break;
+      }
+
+      attemptScale *= 0.58;
+    }
+
+    if (!accepted) {
+      restoreLayoutState(ir, beforeState);
+      break;
+    }
+  }
+
   return moved;
 }
 
@@ -1562,7 +1665,7 @@ function scoreLayoutQuality(ir: DiagramIr, rankdir: Rankdir, layoutConfig: Layou
   const boundsArea = Math.max(1, ir.bounds.width * ir.bounds.height);
   const occupancyRatio = nodeArea / boundsArea;
   const overcrowdedPenalty = Math.max(0, occupancyRatio - 0.2) * 9000;
-  const sparsePenalty = Math.max(0, 0.11 - occupancyRatio) * 12000;
+  const sparsePenalty = Math.max(0, 0.12 - occupancyRatio) * 12000;
 
   return (
     nodeOverlapPenalty * 9.2 +
@@ -1681,7 +1784,7 @@ function optimizeLayoutWithRestarts(
   restoreLayoutState(ir, bestState);
 }
 
-function applyLayout(ir: DiagramIr): void {
+function applyLayout(ir: DiagramIr, targetAspectRatio?: number): void {
   const effectiveLayout = resolveReadableLayoutConfig(ir);
   const graph = new dagre.graphlib.Graph({ multigraph: true, compound: true });
   const subgraphIds = new Set(ir.subgraphs.map((subgraph) => subgraph.id));
@@ -1822,6 +1925,10 @@ function applyLayout(ir: DiagramIr): void {
     rebuildEdgeRoutesFromSideAnchors(ir);
   }
 
+  if (Number.isFinite(targetAspectRatio)) {
+    fitLayoutToTargetAspect(ir, targetAspectRatio as number, rankdir, effectiveLayout, 9);
+  }
+
   recomputeSubgraphBounds(ir);
   recomputeBounds(ir);
 }
@@ -1911,7 +2018,7 @@ function tuneLayoutForAspect(ir: DiagramIr, targetAspectRatio: number): void {
   const baseNodesep = ir.config.layout.nodesep;
   const baseRanksep = ir.config.layout.ranksep;
 
-  applyLayout(ir);
+  applyLayout(ir, target);
 
   let bestState = captureLayoutState(ir);
   let bestNodesep = ir.config.layout.nodesep;
@@ -1947,7 +2054,7 @@ function tuneLayoutForAspect(ir: DiagramIr, targetAspectRatio: number): void {
 
     ir.config.layout.nodesep = candidateNodesep;
     ir.config.layout.ranksep = candidateRanksep;
-    applyLayout(ir);
+    applyLayout(ir, target);
 
     const score = Math.abs(Math.log(diagramAspect(ir) / target));
     if (score < bestScore) {

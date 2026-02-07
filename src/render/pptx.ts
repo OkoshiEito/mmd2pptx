@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import type { DiagramIr, NodeShape } from "../types.js";
 
 const PX_PER_INCH = 96;
-const SLIDE_MARGIN_IN = 0.35;
+const SLIDE_MARGIN_IN = 0.12;
 const require = createRequire(import.meta.url);
 const PptxGenJS = require("pptxgenjs");
 

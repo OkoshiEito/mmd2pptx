@@ -34,7 +34,8 @@ DEFAULT_BASE_SLIDE_WIDTH_IN = 13.333
 DEFAULT_BASE_SLIDE_HEIGHT_IN = 7.5
 DEFAULT_MAX_SLIDE_WIDTH_IN = 56.0
 DEFAULT_MAX_SLIDE_HEIGHT_IN = 31.5
-SLIDE_MARGIN_IN = 0.30
+# Keep a small outer gutter so diagrams visually use almost the full slide.
+SLIDE_MARGIN_IN = 0.12
 
 TOP = 0
 LEFT = 1
