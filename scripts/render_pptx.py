@@ -1072,6 +1072,27 @@ def intersection_penalty(
     return penalty
 
 
+def point_to_segment_distance(
+    px: float,
+    py: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> float:
+    vx = x2 - x1
+    vy = y2 - y1
+    seg_len_sq = vx * vx + vy * vy
+    if seg_len_sq < 1e-9:
+        return ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
+
+    t = ((px - x1) * vx + (py - y1) * vy) / seg_len_sq
+    t = max(0.0, min(1.0, t))
+    proj_x = x1 + vx * t
+    proj_y = y1 + vy * t
+    return ((px - proj_x) ** 2 + (py - proj_y) ** 2) ** 0.5
+
+
 def choose_label_center(
     sx: float,
     sy: float,
@@ -1082,11 +1103,12 @@ def choose_label_center(
     *,
     intersections: list[tuple[float, float]],
     obstacle_boxes: list[tuple[float, float, float, float]],
+    other_segments: list[tuple[float, float, float, float]],
     placed_labels: list[tuple[float, float, float, float]],
     slide_w: float,
     slide_h: float,
     lane_t_bias: float = 0.0,
-) -> tuple[float, float]:
+) -> tuple[float, float, bool]:
     vx = dx - sx
     vy = dy - sy
     length = (vx * vx + vy * vy) ** 0.5
@@ -1134,6 +1156,9 @@ def choose_label_center(
     best_x = (sx + dx) / 2.0
     best_y = (sy + dy) / 2.0
     best_score = float("inf")
+    best_own_dist = float("inf")
+    best_other_dist = float("inf")
+    best_other_hits = 0
 
     for t_pos in t_positions:
         t_used = max(0.08, min(0.92, t_pos + lane_t_bias))
@@ -1159,6 +1184,38 @@ def choose_label_center(
             score += obstacle_area * 32000.0
             score += label_area * 38000.0
             score += intersection_penalty(cx, cy, intersections)
+            own_dist = point_to_segment_distance(cx, cy, sx, sy, dx, dy)
+            own_soft_limit = 0.30 if intersections else 0.20
+            score += own_dist * (1200.0 if intersections else 1900.0)
+            if own_dist > own_soft_limit:
+                score += (own_dist - own_soft_limit) * (12000.0 if intersections else 18000.0)
+
+            other_min_dist = float("inf")
+            other_hits = 0
+            for ox1, oy1, ox2, oy2 in other_segments:
+                other_dist = point_to_segment_distance(cx, cy, ox1, oy1, ox2, oy2)
+                if other_dist < other_min_dist:
+                    other_min_dist = other_dist
+                if segment_intersects_expanded_rect(
+                    ox1,
+                    oy1,
+                    ox2,
+                    oy2,
+                    cx - bw / 2.0,
+                    cy - bh / 2.0,
+                    bw,
+                    bh,
+                    padding=0.03,
+                ):
+                    other_hits += 1
+
+            if other_hits > 0:
+                score += other_hits * 26000.0
+            if math.isfinite(other_min_dist):
+                score += max(0.0, 0.22 - other_min_dist) * 22000.0
+                ambiguity = own_dist + 0.08 - other_min_dist
+                if ambiguity > 0:
+                    score += ambiguity * 26000.0
             # Keep labels attached to the edge visually.
             n_abs = abs(n_off)
             score += n_abs * (260.0 if intersections else 780.0)
@@ -1183,8 +1240,22 @@ def choose_label_center(
                 best_score = score
                 best_x = cx
                 best_y = cy
+                best_own_dist = own_dist
+                best_other_dist = other_min_dist
+                best_other_hits = other_hits
 
-    return best_x, best_y
+    if best_score == float("inf"):
+        return best_x, best_y, False
+
+    own_limit = 0.38 if intersections else 0.24
+    if best_other_hits > 0:
+        return best_x, best_y, False
+    if best_own_dist > own_limit:
+        return best_x, best_y, False
+    if math.isfinite(best_other_dist) and best_other_dist <= best_own_dist + 0.06:
+        return best_x, best_y, False
+
+    return best_x, best_y, True
 
 
 def normalize_color_token(value: str | None) -> str | None:
@@ -2134,6 +2205,7 @@ def render(
 
         edge_items.append(
             {
+                "edgeId": str(edge.get("id", "")).strip() or f"edge_{len(edge_items)}",
                 "group": edge_group,
                 "connector": connector,
                 "style": style,
@@ -2170,6 +2242,20 @@ def render(
     placed_label_boxes: list[tuple[float, float, float, float]] = []
     labeled_items = [item for item in edge_items if item["label"]]
     labeled_items.sort(key=lambda item: len(item["intersections"]), reverse=True)
+    all_nonloop_segments: list[tuple[str, float, float, float, float]] = []
+    for idx, item in enumerate(edge_items):
+        if item.get("selfLoop"):
+            continue
+        edge_id = str(item.get("edgeId", "")).strip() or f"edge_{idx}"
+        all_nonloop_segments.append(
+            (
+                edge_id,
+                float(item["sx"]),
+                float(item["sy"]),
+                float(item["dx"]),
+                float(item["dy"]),
+            )
+        )
 
     segment_totals: dict[tuple[float, float, float, float], int] = {}
     for item in labeled_items:
@@ -2198,6 +2284,13 @@ def render(
         lane_total = segment_totals.get(seg_key, 1)
         lane_center = (lane_total - 1) / 2.0
         lane_t_bias = (lane_index - lane_center) * 0.08
+        edge_id = str(item.get("edgeId", "")).strip()
+        other_segments = [
+            (x1, y1, x2, y2)
+            for seg_edge_id, x1, y1, x2, y2 in all_nonloop_segments
+            if seg_edge_id != edge_id
+        ]
+        label_ok = True
 
         if item.get("selfLoop") and item.get("loopLabelAnchor") is not None:
             base_x, base_y = item["loopLabelAnchor"]
@@ -2216,7 +2309,7 @@ def render(
                     lx = cx
                     ly = cy
         else:
-            lx, ly = choose_label_center(
+            lx, ly, label_ok = choose_label_center(
                 item["sx"],
                 item["sy"],
                 item["dx"],
@@ -2225,11 +2318,14 @@ def render(
                 bh,
                 intersections=item["intersections"],
                 obstacle_boxes=obstacle_boxes,
+                other_segments=other_segments,
                 placed_labels=placed_label_boxes,
                 slide_w=slide_w,
                 slide_h=slide_h,
                 lane_t_bias=lane_t_bias,
             )
+            if not label_ok:
+                continue
 
         box = item["group"].shapes.add_textbox(Inches(lx - bw / 2.0), Inches(ly - bh / 2.0), Inches(bw), Inches(bh))
         box.fill.background()
