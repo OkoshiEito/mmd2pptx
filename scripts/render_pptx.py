@@ -1098,11 +1098,13 @@ def choose_label_center(
         tx, ty = vx / length, vy / length
         nx, ny = -ty, tx
 
-    # Short edges need larger normal offsets; otherwise labels are forced onto nearby nodes.
-    short_pressure = max(0.0, bw * 0.75 - length)
-    max_normal = min(1.05, max(0.16, length * 0.18, bh * 0.95 + 0.06, short_pressure * 0.70))
-    if not intersections:
-        max_normal = min(max_normal, 0.18)
+    # Keep labels close to their edge by default; only allow moderate retreat.
+    short_pressure = max(0.0, bw * 0.70 - length)
+    max_normal = min(0.52, max(0.14, length * 0.12, bh * 0.78 + 0.04, short_pressure * 0.42))
+    if intersections:
+        max_normal = min(max_normal, 0.40)
+    else:
+        max_normal = min(max_normal, 0.20)
 
     if intersections:
         # For crossed edges, avoid the center first so both labels retreat away from the intersection.
@@ -1115,14 +1117,16 @@ def choose_label_center(
 
     normal_offsets = [
         0.0,
-        0.06,
-        -0.06,
-        0.12,
-        -0.12,
+        0.05,
+        -0.05,
+        0.10,
+        -0.10,
+        0.15,
+        -0.15,
         max_normal * 0.45,
         -max_normal * 0.45,
-        max_normal * 0.72,
-        -max_normal * 0.72,
+        max_normal * 0.68,
+        -max_normal * 0.68,
         max_normal,
         -max_normal,
     ]
@@ -1155,11 +1159,16 @@ def choose_label_center(
             score += obstacle_area * 32000.0
             score += label_area * 38000.0
             score += intersection_penalty(cx, cy, intersections)
-            score += abs(n_off) * (80.0 if intersections else 260.0)
+            # Keep labels attached to the edge visually.
+            n_abs = abs(n_off)
+            score += n_abs * (260.0 if intersections else 780.0)
+            score += (n_abs * n_abs) * (420.0 if intersections else 2100.0)
+            if n_abs > (0.30 if intersections else 0.18):
+                score += (n_abs - (0.30 if intersections else 0.18)) * 9000.0
 
             # For crossed edges, pushing away from center is better than occupying the crossing point.
             if intersections:
-                score += max(0.0, 0.20 - abs(t_used - 0.5)) * 1800.0
+                score += max(0.0, 0.14 - abs(t_used - 0.5)) * 1800.0
             else:
                 score += abs(t_used - 0.5) * 12.0
 
