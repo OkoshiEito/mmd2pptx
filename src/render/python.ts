@@ -43,6 +43,15 @@ function runCommand(command: string, args: string[]): Promise<void> {
   });
 }
 
+async function runPython(args: string[]): Promise<void> {
+  try {
+    await runCommand("python3", args);
+  } catch (error) {
+    // Fallback for environments where python3 isn't present (e.g. Windows).
+    await runCommand("python", args);
+  }
+}
+
 export async function renderPptxPython(ir: DiagramIr, options: RenderOptions): Promise<void> {
   const tempRoot = await mkdtemp(path.join(tmpdir(), "mmd2pptx-"));
   const irPath = path.join(tempRoot, "diagram.ir.json");
@@ -52,21 +61,7 @@ export async function renderPptxPython(ir: DiagramIr, options: RenderOptions): P
     await writeFile(irPath, `${JSON.stringify(ir, null, 2)}\n`, "utf8");
 
     const scriptPath = fileURLToPath(new URL("../../scripts/render_pptx.py", import.meta.url));
-    const args = [
-      "run",
-      "--with",
-      "python-pptx",
-      "--with",
-      "requests",
-      "--with",
-      "cairosvg",
-      "python",
-      scriptPath,
-      "--ir",
-      irPath,
-      "--output",
-      path.resolve(options.outputPath),
-    ];
+    const args = [scriptPath, "--ir", irPath, "--output", path.resolve(options.outputPath)];
 
     if (options.slideSize) {
       args.push("--slide-size", options.slideSize);
@@ -83,7 +78,7 @@ export async function renderPptxPython(ir: DiagramIr, options: RenderOptions): P
       args.push("--patch", patchPath);
     }
 
-    await runCommand("uv", args);
+    await runPython(args);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`python renderer failed: ${message}`);
@@ -101,17 +96,7 @@ export async function renderSequencePptxPython(sourceMmd: string, options: Rende
     await writeFile(sourcePath, sourceMmd, "utf8");
 
     const scriptPath = fileURLToPath(new URL("../../scripts/render_sequence_pptx.py", import.meta.url));
-    const args = [
-      "run",
-      "--with",
-      "python-pptx",
-      "python",
-      scriptPath,
-      "--source",
-      sourcePath,
-      "--output",
-      path.resolve(options.outputPath),
-    ];
+    const args = [scriptPath, "--source", sourcePath, "--output", path.resolve(options.outputPath)];
 
     if (options.slideSize) {
       args.push("--slide-size", options.slideSize);
@@ -128,7 +113,7 @@ export async function renderSequencePptxPython(sourceMmd: string, options: Rende
       args.push("--patch", patchPath);
     }
 
-    await runCommand("uv", args);
+    await runPython(args);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`python sequence renderer failed: ${message}`);
