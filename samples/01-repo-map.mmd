@@ -19,95 +19,121 @@ classDef res_queue fill:#FFFDE7,stroke:#FFD54F,stroke-width:1px
 classDef res_external fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px
 classDef group_title fill:#FFFFFF,stroke:#B0BEC5,stroke-width:2px,font-weight:bold
 
+%% ============================================================
+%% Groups
+%% ============================================================
+
 subgraph SG_ENTRY[" "]
   direction TB
-  hdr_entry["ENTRY<br/>入口/起動点<br/>対応: frontend/src/app/, backend/websocket/websocket_server.py, backend/s3-events/src/main.py"]:::group_title
-  ep_front_ui["Frontend UI<br/>frontend/src/app/<br/>ユーザー操作を受け付ける"]:::entry
-  ep_ws_server["WebSocket Server<br/>backend/websocket/websocket_server.py<br/>接続要求を受け付ける"]:::entry
+  hdr_entry["ENTRY<br/>入口/起動点<br/>対応: frontend/, backend/websocket/, backend/s3-events/"]:::group_title
+
+  ep_frontend["Frontend (Web UI)<br/>frontend/src/app/<br/>操作を受け付ける"]:::entry
+  ep_ws_gateway["WebSocket Gateway<br/>backend/websocket/websocket_server.py<br/>接続要求を受け付ける"]:::entry
   ep_s3_worker["S3 Event Worker<br/>backend/s3-events/src/main.py<br/>イベント処理を開始する"]:::entry
 end
 
 subgraph SG_APP[" "]
   direction TB
-  hdr_app["APP<br/>アプリ層/ユースケース<br/>対応: frontend/src/contexts/, backend/websocket/src/api/, backend/s3-events/src/processors/"]:::group_title
-  app_front_orchestrator["Conversation Orchestrator<br/>frontend/src/contexts/WebSocketContext.tsx<br/>会話処理を調整する"]:::app
-  app_backend_api["Backend API Layer<br/>backend/websocket/src/api/ + backend/websocket/src/services/<br/>要求処理を調整する"]:::app
-  app_s3_processor["S3 Processor App<br/>backend/s3-events/src/processors/<br/>ファイル処理を調整する"]:::app
+  hdr_app["APP<br/>アプリ層/ユースケース<br/>対応: backend/websocket/src/api/, backend/s3-events/src/processors/"]:::group_title
+
+  app_realtime_uc["Realtime Usecases<br/>backend/websocket/src/api/…<br/>要求処理を編成する"]:::app
+  app_s3_processor["S3 Event Processor<br/>backend/s3-events/src/processors/<br/>イベント処理を編成する"]:::app
 end
 
 subgraph SG_DOMAIN[" "]
   direction TB
-  hdr_domain["DOMAIN<br/>ドメイン/ビジネスルール<br/>対応: backend/websocket/src/usecases/, backend/websocket/src/agent/, src/pptx_pipeline/"]:::group_title
-  dom_agent_flow["Agent Workflow<br/>backend/websocket/src/usecases/ + backend/websocket/src/agent/<br/>議論ワークフローを実行する"]:::domain
-  dom_pptx_core["PPTX Pipeline<br/>src/pptx_pipeline/ + backend/websocket/src/usecases/pptx_roundtrip.py<br/>PPTX変換規則を適用する"]:::domain
+  hdr_domain["DOMAIN<br/>ドメイン/ビジネスルール<br/>対応: backend/websocket/src/usecases/, src/pptx_pipeline/"]:::group_title
+
+  dom_agent_flow["Agent Workflow<br/>backend/websocket/src/usecases/…<br/>議論フローを実行する"]:::domain
+  dom_pptx_core["PPTX Pipeline<br/>src/pptx_pipeline/<br/>変換規則を適用する"]:::domain
 end
 
 subgraph SG_INFRA[" "]
   direction TB
-  hdr_infra["INFRA<br/>インフラ/永続化/外部接続<br/>対応: backend/websocket/src/database/, backend/websocket/src/crud/, backend/*/src/file_handlers/"]:::group_title
-  inf_data_access["Data Access<br/>backend/websocket/src/database/ + backend/websocket/src/crud/<br/>永続データI/Oを実装する"]:::infra
-  inf_file_adapter["File Handler Adapter<br/>backend/*/src/file_handlers/<br/>外部ファイルI/Oを実装する"]:::infra
+  hdr_infra["INFRA<br/>インフラ/外部接続<br/>対応: backend/websocket/src/database/, backend/*/src/file_handlers/"]:::group_title
+
+  inf_persistence["Persistence (Repo/CRUD)<br/>backend/websocket/src/database/…<br/>永続データI/Oを担う"]:::infra
+  inf_object_storage["Object Storage Adapter<br/>backend/*/src/file_handlers/<br/>外部ファイルI/Oを担う"]:::infra
 end
 
 subgraph SG_SHARED[" "]
   direction TB
-  hdr_shared["SHARED<br/>共通<br/>対応: frontend/src/lib/, backend/websocket/src/dependencies/, backend/websocket/src/core/security/"]:::group_title
+  hdr_shared["SHARED<br/>共通<br/>対応: frontend/src/lib/, backend/websocket/src/core/"]:::group_title
+
+  sh_common["Common / DI / Security<br/>backend/websocket/src/core/…<br/>横断関心を提供する"]:::shared
 end
 
 subgraph SG_CONFIG[" "]
   direction TB
-  hdr_config["CONFIG<br/>設定<br/>対応: frontend/.env.local.example, backend/websocket/.env.example, backend/s3-events/terraform/environments/"]:::group_title
+  hdr_config["CONFIG<br/>設定<br/>対応: .env*, terraform/environments/"]:::group_title
+
+  cfg_runtime["Runtime / Infra Config<br/>frontend/.env* + terraform/…<br/>設定値を供給する"]:::config
 end
 
-res_db_postgresql[("DB(PostgreSQL)<br/>backend/websocket/src/database/<br/>永続化先として振る舞う")]:::res_db
-res_db_dynamodb[("DB(DynamoDB)<br/>backend/websocket/src/crud/*_dynamodb.py<br/>永続化先として振る舞う")]:::res_db
-res_queue_eventbridge[["Queue(EventBridge)<br/>backend/s3-events/terraform/modules/eventbridge/<br/>配信基盤として振る舞う"]]:::res_queue
-res_external_s3[/"External(S3)<br/>backend/*/src/file_handlers/<br/>ファイル保管先として振る舞う"/]:::res_external
-res_external_azure_openai[/"External(Azure OpenAI)<br/>backend/websocket/src/models/ + backend/s3-events/src/processors/<br/>推論先として振る舞う"/]:::res_external
+%% ============================================================
+%% External Resources
+%% ============================================================
+
+res_db_datastore[(DB(PostgreSQL/DynamoDB)<br/>backend/websocket/src/database + crud/<br/>永続化先として振る舞う)]:::res_db
+res_queue_eventbridge[[Queue(EventBridge)<br/>terraform/modules/eventbridge/<br/>S3イベントを配信する]]:::res_queue
+res_external_s3[/External(S3)<br/>backend/*/src/file_handlers/<br/>ファイル保管先として振る舞う/]:::res_external
+res_external_azure_openai[/External(Azure OpenAI)<br/>backend/*/src/models/…<br/>推論先として振る舞う/]:::res_external
+
+%% ============================================================
+%% Layout anchors (non-dependency)
+%% ============================================================
 
 hdr_entry ~~~ hdr_app ~~~ hdr_domain ~~~ hdr_infra ~~~ hdr_shared ~~~ hdr_config
-hdr_config ~~~ res_db_postgresql ~~~ res_db_dynamodb ~~~ res_queue_eventbridge ~~~ res_external_s3 ~~~ res_external_azure_openai
+hdr_config ~~~ res_db_datastore ~~~ res_queue_eventbridge ~~~ res_external_s3 ~~~ res_external_azure_openai
 
-ep_front_ui ==>|HTTP| app_front_orchestrator
-ep_ws_server -->|呼出（import）| app_backend_api
-ep_s3_worker -->|呼出（import）| app_s3_processor
+%% ============================================================
+%% Dependencies (labeled, no multi-edge)
+%% ============================================================
 
-app_front_orchestrator ==>|HTTP| app_backend_api
-app_front_orchestrator -->|呼出（import）| hdr_shared
-app_front_orchestrator -->|設定| hdr_config
+ep_frontend ==>|HTTP| ep_ws_gateway
+ep_ws_gateway ==>|呼出| app_realtime_uc
 
-app_backend_api ==>|呼出| dom_agent_flow
-app_backend_api -->|呼出| dom_pptx_core
-app_backend_api -->|呼出| inf_data_access
-app_backend_api -->|呼出| inf_file_adapter
-app_backend_api -->|呼出（import）| hdr_shared
-app_backend_api -->|設定| hdr_config
-app_backend_api -.->|依存?| res_queue_eventbridge
+ep_s3_worker ==>|呼出| app_s3_processor
+ep_s3_worker -->|消費| res_queue_eventbridge
 
-app_s3_processor -->|呼出| inf_file_adapter
-app_s3_processor -->|設定| hdr_config
+app_realtime_uc ==>|呼出| dom_agent_flow
+app_realtime_uc -->|呼出| dom_pptx_core
+app_realtime_uc -->|呼出（import）| sh_common
+app_realtime_uc -->|設定| cfg_runtime
+
+app_s3_processor -->|呼出| inf_object_storage
 app_s3_processor -->|RPC| res_external_azure_openai
+app_s3_processor -->|呼出（import）| sh_common
+app_s3_processor -->|設定| cfg_runtime
 
 dom_agent_flow ==>|RPC| res_external_azure_openai
-dom_agent_flow -->|呼出| inf_data_access
-dom_agent_flow -->|呼出| inf_file_adapter
+dom_agent_flow -->|呼出| inf_persistence
+dom_agent_flow -->|呼出| inf_object_storage
 
-dom_pptx_core -->|呼出| inf_file_adapter
+dom_pptx_core -->|呼出| inf_object_storage
 
-inf_data_access -->|I/O（読取・書込）| res_db_postgresql
-inf_data_access -->|I/O（読取・書込）| res_db_dynamodb
-inf_file_adapter -->|I/O（読取・書込）| res_external_s3
+inf_persistence -->|I/O（読取・書込）| res_db_datastore
+inf_object_storage -->|I/O（読取・書込）| res_external_s3
 
-ep_s3_worker -->|消費| res_queue_eventbridge
-res_external_s3 -->|発行| res_queue_eventbridge
+ep_ws_gateway -->|呼出（import）| sh_common
+ep_ws_gateway -->|設定| cfg_runtime
+ep_s3_worker -->|設定| cfg_runtime
+
+%% ============================================================
+%% Legend
+%% ============================================================
 
 subgraph SG_LEGEND[" "]
   direction TB
   hdr_legend["LEGEND<br/>図の読み方<br/>対応: 色分けと矢印ルール"]:::group_title
+
   lg_color["Color<br/>entry/app/domain/infra/shared/config/res_*<br/>種別ごとに色分けする"]:::shared
-  lg_edge["Arrow<br/>-->確認 / -.->推定(依存?) / ==>主要フロー / ~~~整列用<br/>依存方向を明示する"]:::shared
-  lg_rule["Rule<br/>同一A→Bは1本のみ<br/>読取+書込はI/O（読取・書込）へ統合する"]:::shared
+  lg_rule["Arrow/Rule<br/>-->確認 / -.->推定(依存?) / ==>主要フロー / ~~~整列用<br/>同一A→Bは1本・I/Oは統合"]:::shared
 end
+
+%% ============================================================
+%% Subgraph style
+%% ============================================================
 
 style SG_ENTRY fill:#FBFBFB,stroke:#DADADA,stroke-width:1px
 style SG_APP fill:#FBFBFB,stroke:#DADADA,stroke-width:1px
