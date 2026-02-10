@@ -16,14 +16,14 @@ interface MeasureOptions {
 }
 
 const DEFAULT_MEASURE_CONFIG: MeasureConfig = {
-  minWidth: 128,
+  minWidth: 156,
   maxWidth: 1200,
-  minHeight: 68,
+  minHeight: 84,
   maxHeight: 620,
-  paddingX: 28,
-  paddingY: 20,
+  paddingX: 34,
+  paddingY: 24,
   fontSize: 14,
-  lineHeightRatio: 1.30,
+  lineHeightRatio: 1.34,
 };
 
 const MIN_LAYOUT_ASPECT = 4 / 3;
@@ -161,13 +161,13 @@ function aspectRatioToT(aspect: number): number {
 function maxWidthForAspect(aspect: number): number {
   const t = aspectRatioToT(aspect);
   // 4:3 is less tolerant to ultra-wide nodes, so cap width lower.
-  return Math.round(lerp(500, 760, t));
+  return Math.round(lerp(620, 900, t));
 }
 
 function heightScaleForAspect(aspect: number): number {
   const t = aspectRatioToT(aspect);
   // 4:3 needs more vertical room per node to keep text inside after overall scaling.
-  return lerp(1.28, 1.05, t);
+  return lerp(1.36, 1.12, t);
 }
 
 function applyShapeAdjustment(node: IrNode): void {
@@ -187,7 +187,7 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
   const aspect = clampAspect(options.targetAspectRatio);
   const maxWidth = Math.min(DEFAULT_MEASURE_CONFIG.maxWidth, maxWidthForAspect(aspect));
   const heightScale = heightScaleForAspect(aspect);
-  const textFitSafety = 1.12;
+  const textFitSafety = 1.20;
 
   for (const node of ir.nodes) {
     if (node.isJunction) {
@@ -203,7 +203,7 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
 
     const lineLengths = lines.map((line) => effectiveTextLength(line));
     const longestLine = Math.max(...lineLengths, effectiveTextLength(node.id));
-    const rawTextWidth = longestLine * fontSize * 0.68;
+    const rawTextWidth = longestLine * fontSize * 0.70;
 
     const hasIcon = Boolean(node.icon && node.icon.trim().length > 0);
     let width =
@@ -212,18 +212,18 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
         : clamp(rawTextWidth + DEFAULT_MEASURE_CONFIG.paddingX * 2, DEFAULT_MEASURE_CONFIG.minWidth, maxWidth);
 
     if (hasIcon) {
-      width = Math.max(width, 148);
+      width = Math.max(width, 180);
     }
 
     const usableWidth = Math.max(24, width - DEFAULT_MEASURE_CONFIG.paddingX * 2);
-    const maxUnitsPerLine = Math.max(6, usableWidth / (fontSize * 0.68));
+    const maxUnitsPerLine = Math.max(6, usableWidth / (fontSize * 0.66));
     const wrappedLines = wrapLines(lines, maxUnitsPerLine);
 
     if (node.width <= 0) {
       const wrappedLengths = wrappedLines.map((line) => effectiveTextLength(line));
       const wrappedLongest = Math.max(...wrappedLengths, effectiveTextLength(node.id));
       width = clamp(
-        (wrappedLongest * fontSize * 0.70 + DEFAULT_MEASURE_CONFIG.paddingX * 2) * textFitSafety,
+        (wrappedLongest * fontSize * 0.72 + DEFAULT_MEASURE_CONFIG.paddingX * 2) * textFitSafety,
         DEFAULT_MEASURE_CONFIG.minWidth,
         maxWidth,
       );

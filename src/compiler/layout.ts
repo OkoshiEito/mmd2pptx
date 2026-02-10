@@ -1662,14 +1662,14 @@ function computeLayoutQuality(ir: DiagramIr, targetAspectRatio: number): LayoutQ
   const hard = computeHardConstraints(ir, segments, labelBoxes);
   const readability = computeReadability(ir, segments);
 
-  const spacingNormAvg = clamp(avgGapScaled / 0.030, 0, 1.8);
-  const spacingNormMin = clamp(minGapScaled / 0.014, 0, 1.8);
+  const spacingNormAvg = clamp(avgGapScaled / 0.028, 0, 1.8);
+  const spacingNormMin = clamp(minGapScaled / 0.012, 0, 1.8);
   const spacingScore = spacingNormAvg * 0.7 + spacingNormMin * 0.3;
-  const nodeAreaNorm = clamp(nodeAreaRatio / 0.24, 0, 1.5);
-  const objectSizeScore = fit * (0.70 + nodeAreaNorm * 0.30) * (0.76 + Math.min(spacingScore, 1.15) * 0.24);
+  const nodeAreaNorm = clamp(nodeAreaRatio / 0.30, 0, 2.2);
+  const objectSizeScore = fit * (0.40 + nodeAreaNorm * 0.60) * (0.65 + Math.min(spacingScore, 1.20) * 0.35);
 
   const desiredMinGapScaled = 0.022;
-  const desiredMaxGapScaled = 0.078;
+  const desiredMaxGapScaled = 0.072;
   let densityPenalty = 0;
   if (avgGapScaled < desiredMinGapScaled) {
     densityPenalty += (desiredMinGapScaled - avgGapScaled) * 9;
@@ -1679,8 +1679,8 @@ function computeLayoutQuality(ir: DiagramIr, targetAspectRatio: number): LayoutQ
   if (minGapScaled < 0.010) {
     densityPenalty += (0.010 - minGapScaled) * 12;
   }
-  if (nodeAreaRatio < 0.10) {
-    densityPenalty += (0.10 - nodeAreaRatio) * 24;
+  if (nodeAreaRatio < 0.15) {
+    densityPenalty += (0.15 - nodeAreaRatio) * 48;
   }
 
   return {
@@ -1744,21 +1744,21 @@ function isBetterQuality(candidate: LayoutQuality, best: LayoutQuality): boolean
   if (objectSizeCmp !== 0) {
     return objectSizeCmp < 0;
   }
-  const spacingCmp = compareHigher(candidate.spacingScore, best.spacingScore, 5e-4);
-  if (spacingCmp !== 0) {
-    return spacingCmp < 0;
-  }
-  const densityCmp = compareLower(candidate.densityPenalty, best.densityPenalty, 0.002);
-  if (densityCmp !== 0) {
-    return densityCmp < 0;
-  }
-  const areaRatioCmp = compareHigher(candidate.nodeAreaRatio, best.nodeAreaRatio, 5e-4);
+  const areaRatioCmp = compareHigher(candidate.nodeAreaRatio, best.nodeAreaRatio, 3e-4);
   if (areaRatioCmp !== 0) {
     return areaRatioCmp < 0;
   }
-  const fitCmp = compareHigher(candidate.fit, best.fit, 1e-4);
+  const fitCmp = compareHigher(candidate.fit, best.fit, 7e-5);
   if (fitCmp !== 0) {
     return fitCmp < 0;
+  }
+  const spacingCmp = compareHigher(candidate.spacingScore, best.spacingScore, 4e-4);
+  if (spacingCmp !== 0) {
+    return spacingCmp < 0;
+  }
+  const densityCmp = compareLower(candidate.densityPenalty, best.densityPenalty, 0.0018);
+  if (densityCmp !== 0) {
+    return densityCmp < 0;
   }
 
   // Stage 2: page usage.
@@ -2082,9 +2082,9 @@ function spreadTopLevelBlocks(ir: DiagramIr, desiredGapPx: number): void {
 }
 
 function refineLayoutForReadability(ir: DiagramIr): void {
-  const desiredGap = clamp((ir.config.layout.nodesep + ir.config.layout.ranksep) / 3.1, 16, 84);
+  const desiredGap = clamp((ir.config.layout.nodesep + ir.config.layout.ranksep) / 3.4, 14, 56);
   applyNodeRepulsion(ir, desiredGap);
-  spreadTopLevelBlocks(ir, desiredGap * 1.18);
+  spreadTopLevelBlocks(ir, desiredGap * 1.05);
   rerouteEdgesStraight(ir);
 }
 
@@ -2219,8 +2219,8 @@ function optimizeLayoutForSlide(ir: DiagramIr, targetAspectRatio: number): void 
   const directionCandidates: DiagramDirection[] =
     swappedDirection !== baseDirection ? [baseDirection, swappedDirection] : [baseDirection];
 
-  const nodesepCandidates = spacingCandidates(baseNodesep, [56, 72, 96, 128, 168, 220, 280], 24, 460);
-  const ranksepCandidates = spacingCandidates(baseRanksep, [34, 48, 68, 94, 130, 178, 240], 20, 460);
+  const nodesepCandidates = spacingCandidates(baseNodesep, [42, 56, 72, 96, 128, 168, 220], 22, 320);
+  const ranksepCandidates = spacingCandidates(baseRanksep, [28, 40, 56, 76, 104, 144, 192], 18, 320);
 
   let bestState: LayoutState | undefined;
   let bestQuality: LayoutQuality | undefined;
