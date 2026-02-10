@@ -23,6 +23,45 @@ npm run build
 レンダラは `python` に統一されています（`--renderer` は不要）。
 `python3`（または `python`）実行環境と `python-pptx` が必要です。
 
+## VM セットアップ（git clone から）
+
+Ubuntu/Debian 系 VM の例です。
+
+```bash
+# 1) システム依存
+sudo apt-get update
+sudo apt-get install -y git curl python3 python3-pip libcairo2 libffi-dev libpango-1.0-0 libpangocairo-1.0-0 shared-mime-info
+
+# 2) Node.js (推奨: 20 LTS)
+curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+export NVM_DIR="$HOME/.nvm"
+. "$NVM_DIR/nvm.sh"
+nvm install 20
+nvm use 20
+
+# 3) clone
+git clone https://github.com/OkoshiEito/mmd2pptx.git
+cd mmd2pptx
+
+# 4) Node 依存
+npm ci
+
+# 5) Python 依存
+python3 -m pip install --user python-pptx requests cairosvg
+
+# 6) build
+npm run build
+
+# 7) mmd2pptx コマンドを有効化（この clone を CLI として登録）
+npm link
+
+# 8) 動作確認
+mmd2pptx doctor
+mmd2pptx build samples -o samples/samples.merged.pptx
+```
+
+`mmd2pptx: command not found` になる場合は、いったん新しいシェルを開いて再実行してください。
+
 ## 使い方
 
 ```bash
