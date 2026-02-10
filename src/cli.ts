@@ -21,6 +21,13 @@ interface BuildCliOptions {
   lang?: string;
 }
 
+interface ResolvedBuildInputs {
+  files: string[];
+  usedDirectoryInput: boolean;
+  firstInputWasDirectory: boolean;
+  firstDirectoryPath?: string;
+}
+
 function defaultOutputPath(input: string): string {
   const parsed = path.parse(input);
   return path.join(parsed.dir, `${parsed.name}.pptx`);
@@ -30,6 +37,122 @@ function defaultMergedOutputPath(inputs: string[]): string {
   const first = inputs[0];
   const parsed = path.parse(first);
   return path.join(parsed.dir, `${parsed.name}.merged.pptx`);
+}
+
+function isMmdFilePath(filePath: string): boolean {
+  return /\.mmd$/iu.test(filePath);
+}
+
+async function collectMmdFilesRecursively(directory: string): Promise<string[]> {
+  const out: string[] = [];
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  entries.sort((a, b) => a.name.localeCompare(b.name, "en"));
+
+  for (const entry of entries) {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...(await collectMmdFilesRecursively(fullPath)));
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
+    if (!isMmdFilePath(entry.name)) {
+      continue;
+    }
+    out.push(fullPath);
+  }
+
+  return out;
+}
+
+async function resolveBuildInputs(inputs: string[]): Promise<ResolvedBuildInputs> {
+  const files: string[] = [];
+  let usedDirectoryInput = false;
+  let firstInputWasDirectory = false;
+  let firstDirectoryPath: string | undefined;
+
+  for (let i = 0; i < inputs.length; i += 1) {
+    const input = path.resolve(inputs[i]);
+    let stat;
+    try {
+      stat = await fs.stat(input);
+    } catch {
+      throw new Error(`Input not found: ${inputs[i]}`);
+    }
+
+    if (stat.isDirectory()) {
+      usedDirectoryInput = true;
+      if (i === 0) {
+        firstInputWasDirectory = true;
+        firstDirectoryPath = input;
+      }
+      const discovered = await collectMmdFilesRecursively(input);
+      if (discovered.length === 0) {
+        throw new Error(`No .mmd files found under directory: ${inputs[i]}`);
+      }
+      files.push(...discovered);
+      continue;
+    }
+
+    if (!stat.isFile()) {
+      throw new Error(`Unsupported input type: ${inputs[i]}`);
+    }
+    if (!isMmdFilePath(input)) {
+      throw new Error(`Input must be .mmd or a directory: ${inputs[i]}`);
+    }
+    files.push(input);
+  }
+
+  if (files.length === 0) {
+    throw new Error("No .mmd input files were resolved.");
+  }
+
+  return {
+    files,
+    usedDirectoryInput,
+    firstInputWasDirectory,
+    firstDirectoryPath,
+  };
+}
+
+function defaultMergedOutputPathForResolvedInputs(resolved: ResolvedBuildInputs): string {
+  if (resolved.firstInputWasDirectory && resolved.firstDirectoryPath) {
+    const dirName = path.basename(resolved.firstDirectoryPath);
+    return path.join(resolved.firstDirectoryPath, `${dirName}.merged.pptx`);
+  }
+  return defaultMergedOutputPath(resolved.files);
+}
+
+function applySequenceFileTitle(sourceMmd: string, fileTitle: string): string {
+  const lines = sourceMmd.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let headerSeen = false;
+  let titleInjected = false;
+
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (!headerSeen) {
+      out.push(raw);
+      if (/^sequenceDiagram\b/iu.test(trimmed)) {
+        out.push(`title ${fileTitle}`);
+        headerSeen = true;
+        titleInjected = true;
+      }
+      continue;
+    }
+
+    if (/^title\s*:?.*$/iu.test(trimmed)) {
+      continue;
+    }
+
+    out.push(raw);
+  }
+
+  if (!titleInjected) {
+    return sourceMmd;
+  }
+  return out.join("\n");
 }
 
 function slideSizeToAspectRatio(slideSize: string | undefined): number {
@@ -100,8 +223,15 @@ async function runBuild(inputs: string[], opts: BuildCliOptions): Promise<void> 
     throw new Error("At least one input .mmd file is required.");
   }
 
-  const multiInput = inputs.length > 1;
-  const outputPath = opts.output ?? (multiInput ? defaultMergedOutputPath(inputs) : defaultOutputPath(inputs[0]));
+  const resolved = await resolveBuildInputs(inputs);
+  const inputFiles = resolved.files;
+  const multiInput = inputFiles.length > 1;
+  const outputPath = opts.output ?? (multiInput ? defaultMergedOutputPathForResolvedInputs(resolved) : defaultOutputPath(inputFiles[0]));
+  const shouldStampFilenameTitle = multiInput || resolved.usedDirectoryInput;
+
+  if (resolved.usedDirectoryInput) {
+    process.stdout.write(`Resolved ${inputFiles.length} .mmd files from directory input\n`);
+  }
 
   let patchText: string | undefined;
   let patch;
@@ -125,8 +255,9 @@ async function runBuild(inputs: string[], opts: BuildCliOptions): Promise<void> 
     process.stdout.write(`Renderer(auto): ${renderer}\n`);
   }
 
-  for (let index = 0; index < inputs.length; index += 1) {
-    const input = inputs[index];
+  for (let index = 0; index < inputFiles.length; index += 1) {
+    const input = inputFiles[index];
+    const fileTitle = path.basename(input);
     const sourceMmd = await fs.readFile(input, "utf8");
     const sequenceMode = isSequenceDiagramSource(sourceMmd);
     const appendToPath = multiInput && index > 0 ? outputPath : undefined;
@@ -135,7 +266,8 @@ async function runBuild(inputs: string[], opts: BuildCliOptions): Promise<void> 
       if (renderer !== "python") {
         throw new Error("sequenceDiagram currently supports only python renderer (install uv).");
       }
-      await renderSequencePptxPython(sourceMmd, {
+      const sequenceSource = shouldStampFilenameTitle ? applySequenceFileTitle(sourceMmd, fileTitle) : sourceMmd;
+      await renderSequencePptxPython(sequenceSource, {
         outputPath,
         patchText,
         slideSize: opts.slideSize,
@@ -158,6 +290,9 @@ async function runBuild(inputs: string[], opts: BuildCliOptions): Promise<void> 
       lang: opts.lang,
       targetAspectRatio: slideSizeToAspectRatio(opts.slideSize),
     });
+    if (shouldStampFilenameTitle) {
+      ir.meta.title = fileTitle;
+    }
     if (opts.irOut) {
       await fs.writeFile(opts.irOut, `${JSON.stringify(ir, null, 2)}\n`, "utf8");
     }
@@ -213,7 +348,7 @@ program
 
 program
   .command("build")
-  .argument("<inputs...>", "input .mmd file(s)")
+  .argument("<inputs...>", "input .mmd file(s) or directories")
   .option("-o, --output <path>", "output .pptx path")
   .option("-p, --patch <path>", "patch yaml path")
   .option("-r, --renderer <backend>", "render backend: auto|python|js", "auto")

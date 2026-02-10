@@ -35,6 +35,10 @@ node dist/cli.js build samples/flow.mmd -o samples/flow.pptx
 # 複数mmdを1つのpptxに集約（1ファイル=1スライド）
 node dist/cli.js samples/flow.mmd samples/self-loop-inline.mmd -o samples/combined.pptx --renderer python
 
+# ディレクトリ配下の .mmd を再帰収集して1つのpptxへ集約
+# 各スライド左上に元ファイル名を表示
+node dist/cli.js build samples --renderer python -o samples/samples.merged.pptx
+
 # patch適用
 node dist/cli.js samples/flow.mmd --patch samples/flow.patch.yml -o samples/flow.pptx
 
