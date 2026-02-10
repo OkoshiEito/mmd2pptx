@@ -20,8 +20,8 @@ npm install
 npm run build
 ```
 
-`python` レンダラを使う場合は `uv` が必要です。
-`--renderer auto`（既定）は `uv` が見つかれば `python`、なければ `js` を使います。
+レンダラは `python` に統一されています（`--renderer` は不要）。
+`python3`（または `python`）実行環境と `python-pptx` が必要です。
 
 ## 使い方
 
@@ -33,23 +33,20 @@ node dist/cli.js samples/flow.mmd
 node dist/cli.js build samples/flow.mmd -o samples/flow.pptx
 
 # 複数mmdを1つのpptxに集約（1ファイル=1スライド）
-node dist/cli.js samples/flow.mmd samples/self-loop-inline.mmd -o samples/combined.pptx --renderer python
+node dist/cli.js samples/flow.mmd samples/self-loop-inline.mmd -o samples/combined.pptx
 
 # ディレクトリ配下の .mmd を再帰収集して1つのpptxへ集約
 # 各スライド左上に元ファイル名を表示
-node dist/cli.js build samples --renderer python -o samples/samples.merged.pptx
+node dist/cli.js build samples -o samples/samples.merged.pptx
 
 # patch適用
 node dist/cli.js samples/flow.mmd --patch samples/flow.patch.yml -o samples/flow.pptx
 
-# JSレンダラを使う場合
-node dist/cli.js samples/flow.mmd --renderer js -o samples/flow.pptx
+# sequenceDiagram
+node dist/cli.js build samples/sequence-all-expr.mmd -o samples/sequence-all-expr.pptx
 
-# sequenceDiagram (python renderer)
-node dist/cli.js build samples/sequence-all-expr.mmd --renderer python -o samples/sequence-all-expr.pptx
-
-# classDiagram (python renderer)
-node dist/cli.js build samples/class_syntax_coverage.mmd --renderer python -o samples/class_syntax_coverage.pptx
+# classDiagram
+node dist/cli.js build samples/class_syntax_coverage.mmd -o samples/class_syntax_coverage.pptx
 
 # IRを出力
 node dist/cli.js build samples/flow.mmd --ir-out samples/flow.ir.json -o samples/flow.pptx
@@ -60,7 +57,6 @@ node dist/cli.js doctor
 
 複数入力時の補足:
 
-- `--renderer python` のみ対応
 - `--patch` は未対応
 - `--ir-out` は未対応
 - `-o` 省略時は `<先頭入力名>.merged.pptx` を出力
@@ -115,7 +111,7 @@ subgraphs:
 - Normalize: ノード/エッジ/サブグラフを正規化して IR 化
 - Measure: 文字幅推定でノードサイズを決定
 - Layout: Dagre で座標/経路を計算
-- Render: python-pptx (既定) / PptxGenJS (任意) で図形生成
+- Render: python-pptx で図形生成
 - Embed: 元 mmd と patch をノートへ埋め込み
 
 ## 現在の対応範囲 (MVP)
@@ -123,7 +119,7 @@ subgraphs:
 - `flowchart` / `graph`
 - `classDiagram`（関係マーカー・多重度ラベル・namespace・note・classDef/class/style/cssClass）
 - `architecture-beta`（group/service/junction、`id:Side -- Side:id`、`{group}` 接続、service icon）
-- `sequenceDiagram`（python renderer）
+- `sequenceDiagram`
 - ノード形状: 四角/角丸/円/菱形/平行四辺形
 - エッジ: 実線/点線/太線、矢印、ラベル (`|label|`)
 - subgraph
@@ -133,7 +129,7 @@ subgraphs:
 - `sequenceDiagram` は IR 非経由で直接レンダリング（`--ir-out` はダミー情報のみ）
 - `stateDiagram` など未対応図種は順次対応予定
 - エッジラベルは `-->|label|` 形式を優先サポート
-- `python` レンダラではコネクタ接続、`js` レンダラでは線分描画
+- python レンダラ前提の実装
 
 ## 将来拡張
 

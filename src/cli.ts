@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { compileMmdToIr } from "./compiler/index.js";
 import { parsePatchYaml } from "./compiler/patch.js";
-import { renderPptx } from "./render/pptx.js";
 import { renderPptxPython, renderSequencePptxPython } from "./render/python.js";
 
 const program = new Command();
@@ -192,10 +191,6 @@ function isSequenceDiagramSource(source: string): boolean {
   return false;
 }
 
-function normalizeRendererOption(input: string | undefined): string {
-  return String(input ?? "auto").trim().toLowerCase();
-}
-
 function commandExists(command: string): Promise<boolean> {
   return new Promise((resolve) => {
     const check = process.platform === "win32" ? "where" : "which";
@@ -203,19 +198,6 @@ function commandExists(command: string): Promise<boolean> {
     child.on("error", () => resolve(false));
     child.on("close", (code) => resolve(code === 0));
   });
-}
-
-async function resolveRenderer(rendererOption: string | undefined): Promise<"python" | "js"> {
-  const renderer = normalizeRendererOption(rendererOption);
-  if (renderer === "python" || renderer === "js") {
-    return renderer;
-  }
-  if (renderer !== "auto") {
-    throw new Error(`Unknown renderer: ${rendererOption}. Use 'auto', 'python', or 'js'.`);
-  }
-
-  const hasUv = await commandExists("uv");
-  return hasUv ? "python" : "js";
 }
 
 async function runBuild(inputs: string[], opts: BuildCliOptions): Promise<void> {
@@ -243,16 +225,12 @@ async function runBuild(inputs: string[], opts: BuildCliOptions): Promise<void> 
     patch = parsePatchYaml(patchText);
   }
 
-  const rendererOption = normalizeRendererOption(opts.renderer);
-  const renderer = await resolveRenderer(opts.renderer);
-  if (multiInput && renderer !== "python") {
-    throw new Error("Multiple input files require python renderer. Install uv or set --renderer python.");
+  const rendererOption = String(opts.renderer ?? "").trim().toLowerCase();
+  if (rendererOption && rendererOption !== "python" && rendererOption !== "auto") {
+    process.stdout.write("Warning: --renderer is deprecated and ignored. Using python renderer.\n");
   }
   if (multiInput && opts.irOut) {
     throw new Error("--ir-out is not supported when multiple input files are provided.");
-  }
-  if (rendererOption === "auto") {
-    process.stdout.write(`Renderer(auto): ${renderer}\n`);
   }
 
   for (let index = 0; index < inputFiles.length; index += 1) {
@@ -263,9 +241,6 @@ async function runBuild(inputs: string[], opts: BuildCliOptions): Promise<void> 
     const appendToPath = multiInput && index > 0 ? outputPath : undefined;
 
     if (sequenceMode) {
-      if (renderer !== "python") {
-        throw new Error("sequenceDiagram currently supports only python renderer (install uv).");
-      }
       const sequenceSource = shouldStampFilenameTitle ? applySequenceFileTitle(sourceMmd, fileTitle) : sourceMmd;
       await renderSequencePptxPython(sequenceSource, {
         outputPath,
@@ -295,17 +270,6 @@ async function runBuild(inputs: string[], opts: BuildCliOptions): Promise<void> 
     }
     if (opts.irOut) {
       await fs.writeFile(opts.irOut, `${JSON.stringify(ir, null, 2)}\n`, "utf8");
-    }
-
-    if (renderer === "js") {
-      await renderPptx(ir, {
-        outputPath,
-        sourceMmd,
-        patchText,
-        slideSize: opts.slideSize,
-        edgeRouting: opts.edgeRouting,
-      });
-      continue;
     }
 
     await renderPptxPython(ir, {
@@ -351,7 +315,7 @@ program
   .argument("<inputs...>", "input .mmd file(s) or directories")
   .option("-o, --output <path>", "output .pptx path")
   .option("-p, --patch <path>", "patch yaml path")
-  .option("-r, --renderer <backend>", "render backend: auto|python|js", "auto")
+  .addOption(new Option("-r, --renderer <backend>").hideHelp())
   .option("-s, --slide-size <size>", "slide size: 16:9 | 4:3 | <width>x<height> (inches)", "16:9")
   .option("-e, --edge-routing <mode>", "edge routing: straight | elbow", "straight")
   .option("--ir-out <path>", "write normalized/layouted IR JSON")
@@ -361,14 +325,18 @@ program
 
 program
   .command("doctor")
-  .description("Check runtime dependencies for renderer selection")
+  .description("Check runtime dependencies")
   .action(async () => {
-    const hasUv = await commandExists("uv");
+    const hasPython3 = await commandExists("python3");
+    const hasPython = hasPython3 ? true : await commandExists("python");
     process.stdout.write(`Node: ${process.version}\n`);
-    process.stdout.write(`uv: ${hasUv ? "found" : "not found"}\n`);
-    process.stdout.write(`default renderer(auto): ${hasUv ? "python" : "js"}\n`);
-    if (!hasUv) {
-      process.stdout.write("tip: install uv to use python renderer (sequenceDiagram and best fidelity)\n");
+    process.stdout.write(`renderer: python (fixed)\n`);
+    process.stdout.write(`python3: ${hasPython3 ? "found" : "not found"}\n`);
+    if (!hasPython3) {
+      process.stdout.write(`python: ${hasPython ? "found" : "not found"}\n`);
+    }
+    if (!hasPython) {
+      process.stdout.write("tip: install Python 3 to use mmd2pptx\n");
     }
   });
 
