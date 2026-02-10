@@ -16,14 +16,14 @@ interface MeasureOptions {
 }
 
 const DEFAULT_MEASURE_CONFIG: MeasureConfig = {
-  minWidth: 110,
+  minWidth: 128,
   maxWidth: 1200,
-  minHeight: 56,
+  minHeight: 68,
   maxHeight: 620,
-  paddingX: 22,
-  paddingY: 16,
+  paddingX: 28,
+  paddingY: 20,
   fontSize: 14,
-  lineHeightRatio: 1.25,
+  lineHeightRatio: 1.30,
 };
 
 const MIN_LAYOUT_ASPECT = 4 / 3;
@@ -187,6 +187,7 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
   const aspect = clampAspect(options.targetAspectRatio);
   const maxWidth = Math.min(DEFAULT_MEASURE_CONFIG.maxWidth, maxWidthForAspect(aspect));
   const heightScale = heightScaleForAspect(aspect);
+  const textFitSafety = 1.12;
 
   for (const node of ir.nodes) {
     if (node.isJunction) {
@@ -222,7 +223,7 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
       const wrappedLengths = wrappedLines.map((line) => effectiveTextLength(line));
       const wrappedLongest = Math.max(...wrappedLengths, effectiveTextLength(node.id));
       width = clamp(
-        wrappedLongest * fontSize * 0.68 + DEFAULT_MEASURE_CONFIG.paddingX * 2,
+        (wrappedLongest * fontSize * 0.70 + DEFAULT_MEASURE_CONFIG.paddingX * 2) * textFitSafety,
         DEFAULT_MEASURE_CONFIG.minWidth,
         maxWidth,
       );
@@ -230,7 +231,8 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
 
     const lineCount = Math.max(1, wrappedLines.length);
     const iconHeadroom = hasIcon ? Math.max(20, fontSize * 1.3) : 0;
-    const desiredHeight = (lineCount * lineHeight + DEFAULT_MEASURE_CONFIG.paddingY * 2 + iconHeadroom) * heightScale;
+    const desiredHeight =
+      (lineCount * (lineHeight * 1.03) + DEFAULT_MEASURE_CONFIG.paddingY * 2 + iconHeadroom) * heightScale * textFitSafety;
 
     const height =
       node.height > 0

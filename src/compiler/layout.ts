@@ -469,6 +469,9 @@ interface LayoutQuality {
   hard: HardConstraintStats;
   readability: ReadabilityStats;
   fit: number;
+  objectSizeScore: number;
+  spacingScore: number;
+  nodeAreaRatio: number;
   coverage: number;
   aspectError: number;
   minGapPx: number;
@@ -562,9 +565,9 @@ function estimateNodeTextMinSize(node: DiagramIr["nodes"][number]): { minWidth: 
     .filter((line) => line.length > 0);
   const safeLines = lines.length > 0 ? lines : [node.id];
   const longest = Math.max(...safeLines.map((line) => effectiveTextUnits(line)), effectiveTextUnits(node.id));
-  const minWidth = longest * fontSize * 0.68 + 44;
+  const minWidth = (longest * fontSize * 0.70 + 48) * 1.08;
   const iconHeadroom = node.icon ? Math.max(20, fontSize * 1.3) : 0;
-  const minHeight = safeLines.length * (fontSize * 1.25) + 32 + iconHeadroom;
+  const minHeight = (safeLines.length * (fontSize * 1.30) + 34 + iconHeadroom) * 1.08;
   return {
     minWidth,
     minHeight,
@@ -1650,28 +1653,43 @@ function computeLayoutQuality(ir: DiagramIr, targetAspectRatio: number): LayoutQ
   const aspectError = Math.abs(Math.log(Math.max(1e-6, aspect / target)));
   const edgeLenScaled = totalEdgeLengthPx(ir) * fit;
   const bends = totalBends(ir);
+  const boundsArea = Math.max(1, ir.bounds.width * ir.bounds.height);
+  const totalNodeArea = ir.nodes.reduce((sum, node) => sum + Math.max(0, node.width * node.height), 0);
+  const nodeAreaRatio = totalNodeArea / boundsArea;
 
   const labelBoxes = ir.edges.map((edge) => estimateEdgeLabelRect(edge)).filter((label): label is EdgeLabelBox => Boolean(label));
   const segments = buildEdgeSegments(ir);
   const hard = computeHardConstraints(ir, segments, labelBoxes);
   const readability = computeReadability(ir, segments);
 
+  const spacingNormAvg = clamp(avgGapScaled / 0.030, 0, 1.8);
+  const spacingNormMin = clamp(minGapScaled / 0.014, 0, 1.8);
+  const spacingScore = spacingNormAvg * 0.7 + spacingNormMin * 0.3;
+  const nodeAreaNorm = clamp(nodeAreaRatio / 0.24, 0, 1.5);
+  const objectSizeScore = fit * (0.70 + nodeAreaNorm * 0.30) * (0.76 + Math.min(spacingScore, 1.15) * 0.24);
+
   const desiredMinGapScaled = 0.022;
-  const desiredMaxGapScaled = 0.090;
+  const desiredMaxGapScaled = 0.078;
   let densityPenalty = 0;
   if (avgGapScaled < desiredMinGapScaled) {
     densityPenalty += (desiredMinGapScaled - avgGapScaled) * 9;
   } else if (avgGapScaled > desiredMaxGapScaled) {
-    densityPenalty += (avgGapScaled - desiredMaxGapScaled) * 2.2;
+    densityPenalty += (avgGapScaled - desiredMaxGapScaled) * 3.6;
   }
   if (minGapScaled < 0.010) {
     densityPenalty += (0.010 - minGapScaled) * 12;
+  }
+  if (nodeAreaRatio < 0.10) {
+    densityPenalty += (0.10 - nodeAreaRatio) * 24;
   }
 
   return {
     hard,
     readability,
     fit,
+    objectSizeScore,
+    spacingScore,
+    nodeAreaRatio,
     coverage,
     aspectError,
     minGapPx,
@@ -1702,6 +1720,11 @@ function compareHigher(a: number, b: number, tolerance = 1e-6): number {
 
 function isBetterQuality(candidate: LayoutQuality, best: LayoutQuality): boolean {
   // Stage 0: hard constraints (must satisfy first).
+  const textOverflowCmp = compareLower(candidate.hard.textOverflow, best.hard.textOverflow);
+  if (textOverflowCmp !== 0) {
+    return textOverflowCmp < 0;
+  }
+
   if (candidate.hard.feasible !== best.hard.feasible) {
     return candidate.hard.feasible;
   }
@@ -1716,7 +1739,43 @@ function isBetterQuality(candidate: LayoutQuality, best: LayoutQuality): boolean
     }
   }
 
-  // Stage 1: edge readability.
+  // Stage 1: object legibility and presence.
+  const objectSizeCmp = compareHigher(candidate.objectSizeScore, best.objectSizeScore, 1e-4);
+  if (objectSizeCmp !== 0) {
+    return objectSizeCmp < 0;
+  }
+  const spacingCmp = compareHigher(candidate.spacingScore, best.spacingScore, 5e-4);
+  if (spacingCmp !== 0) {
+    return spacingCmp < 0;
+  }
+  const densityCmp = compareLower(candidate.densityPenalty, best.densityPenalty, 0.002);
+  if (densityCmp !== 0) {
+    return densityCmp < 0;
+  }
+  const areaRatioCmp = compareHigher(candidate.nodeAreaRatio, best.nodeAreaRatio, 5e-4);
+  if (areaRatioCmp !== 0) {
+    return areaRatioCmp < 0;
+  }
+  const fitCmp = compareHigher(candidate.fit, best.fit, 1e-4);
+  if (fitCmp !== 0) {
+    return fitCmp < 0;
+  }
+
+  // Stage 2: page usage.
+  const aspectCmp = compareLower(candidate.aspectError, best.aspectError, 0.003);
+  if (aspectCmp !== 0) {
+    return aspectCmp < 0;
+  }
+  const coverageCmp = compareHigher(candidate.coverage, best.coverage, 0.004);
+  if (coverageCmp !== 0) {
+    return coverageCmp < 0;
+  }
+  const avgGapCmp = compareHigher(candidate.avgGapScaled, best.avgGapScaled, 4e-4);
+  if (avgGapCmp !== 0) {
+    return avgGapCmp < 0;
+  }
+
+  // Stage 3: edge readability.
   const crossingCmp = compareLower(candidate.readability.edgeCrossings, best.readability.edgeCrossings);
   if (crossingCmp !== 0) {
     return crossingCmp < 0;
@@ -1730,29 +1789,7 @@ function isBetterQuality(candidate: LayoutQuality, best: LayoutQuality): boolean
     return parallelCmp < 0;
   }
 
-  // Stage 2: page usage and spacing quality.
-  const aspectCmp = compareLower(candidate.aspectError, best.aspectError, 0.003);
-  if (aspectCmp !== 0) {
-    return aspectCmp < 0;
-  }
-  const coverageCmp = compareHigher(candidate.coverage, best.coverage, 0.004);
-  if (coverageCmp !== 0) {
-    return coverageCmp < 0;
-  }
-  const densityCmp = compareLower(candidate.densityPenalty, best.densityPenalty, 0.002);
-  if (densityCmp !== 0) {
-    return densityCmp < 0;
-  }
-  const fitCmp = compareHigher(candidate.fit, best.fit, 1e-4);
-  if (fitCmp !== 0) {
-    return fitCmp < 0;
-  }
-  const avgGapCmp = compareHigher(candidate.avgGapScaled, best.avgGapScaled, 5e-4);
-  if (avgGapCmp !== 0) {
-    return avgGapCmp < 0;
-  }
-
-  // Stage 3: secondary aesthetics and compactness.
+  // Stage 4: secondary aesthetics and compactness.
   const bendCmp = compareLower(candidate.bends, best.bends);
   if (bendCmp !== 0) {
     return bendCmp < 0;
@@ -2051,6 +2088,43 @@ function refineLayoutForReadability(ir: DiagramIr): void {
   rerouteEdgesStraight(ir);
 }
 
+function rebalanceAspectBySpreading(ir: DiagramIr, targetAspectRatio: number): void {
+  const target = clampAspect(targetAspectRatio);
+  recomputeBounds(ir);
+  const currentAspect = diagramAspect(ir);
+  if (!Number.isFinite(currentAspect) || currentAspect <= 0) {
+    return;
+  }
+
+  let axis: "x" | "y" | undefined;
+  let factor = 1;
+  if (currentAspect < target * 0.94) {
+    axis = "x";
+    factor = clamp(target / currentAspect, 1, 1.5);
+  } else if (currentAspect > target * 1.06) {
+    axis = "y";
+    factor = clamp(currentAspect / target, 1, 1.5);
+  }
+
+  if (!axis || factor <= 1.01) {
+    return;
+  }
+
+  const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
+  const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
+
+  for (const node of ir.nodes) {
+    if (axis === "x") {
+      node.x = cx + (node.x - cx) * factor;
+    } else {
+      node.y = cy + (node.y - cy) * factor;
+    }
+  }
+
+  recomputeSubgraphBounds(ir);
+  rerouteEdgesStraight(ir);
+}
+
 function wrapTopLevelBlocks(ir: DiagramIr, targetAspectRatio: number): void {
   const blocks = collectTopLevelBlocks(ir);
   if (blocks.length <= 1) {
@@ -2062,6 +2136,7 @@ function wrapTopLevelBlocks(ir: DiagramIr, targetAspectRatio: number): void {
 
   rerouteEdgesStraight(ir);
   refineLayoutForReadability(ir);
+  rebalanceAspectBySpreading(ir, targetAspectRatio);
   const baseState = captureLayoutState(ir);
   let bestState = baseState;
   let bestQuality = computeLayoutQuality(ir, targetAspectRatio);
@@ -2073,6 +2148,7 @@ function wrapTopLevelBlocks(ir: DiagramIr, targetAspectRatio: number): void {
     restoreLayoutState(ir, baseState);
     applyPackedRows(ir, rows, gap);
     refineLayoutForReadability(ir);
+    rebalanceAspectBySpreading(ir, targetAspectRatio);
     const q = computeLayoutQuality(ir, targetAspectRatio);
     if (isBetterQuality(q, bestQuality)) {
       bestQuality = q;
@@ -2164,6 +2240,7 @@ function optimizeLayoutForSlide(ir: DiagramIr, targetAspectRatio: number): void 
         rerouteEdgesStraight(ir);
         wrapTopLevelBlocks(ir, targetAspectRatio);
         refineLayoutForReadability(ir);
+        rebalanceAspectBySpreading(ir, targetAspectRatio);
         const quality = computeLayoutQuality(ir, targetAspectRatio);
 
         if (!bestQuality || isBetterQuality(quality, bestQuality)) {
@@ -2191,6 +2268,7 @@ function optimizeLayoutForSlide(ir: DiagramIr, targetAspectRatio: number): void 
   applyLayout(ir);
   rerouteEdgesStraight(ir);
   refineLayoutForReadability(ir);
+  rebalanceAspectBySpreading(ir, targetAspectRatio);
 }
 
 export function layoutDiagram(ir: DiagramIr, options: LayoutOptions = {}): void {
