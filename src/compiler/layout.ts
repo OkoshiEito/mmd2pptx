@@ -1662,25 +1662,27 @@ function computeLayoutQuality(ir: DiagramIr, targetAspectRatio: number): LayoutQ
   const hard = computeHardConstraints(ir, segments, labelBoxes);
   const readability = computeReadability(ir, segments);
 
-  const spacingNormAvg = clamp(avgGapScaled / 0.028, 0, 1.8);
-  const spacingNormMin = clamp(minGapScaled / 0.012, 0, 1.8);
-  const spacingScore = spacingNormAvg * 0.7 + spacingNormMin * 0.3;
-  const nodeAreaNorm = clamp(nodeAreaRatio / 0.30, 0, 2.2);
-  const objectSizeScore = fit * (0.40 + nodeAreaNorm * 0.60) * (0.65 + Math.min(spacingScore, 1.20) * 0.35);
+  const spacingCenter = 0.020;
+  const spacingHalfRange = 0.012;
+  const spacingAvgScore = clamp(1 - Math.abs(avgGapScaled - spacingCenter) / spacingHalfRange, 0, 1);
+  const spacingMinScore = clamp(minGapScaled / 0.012, 0, 1);
+  const spacingScore = spacingAvgScore * 0.68 + spacingMinScore * 0.32;
+  const nodeAreaNorm = clamp(nodeAreaRatio / 0.26, 0, 2.4);
+  const objectSizeScore = fit * (0.30 + nodeAreaNorm * 0.70);
 
   const desiredMinGapScaled = 0.022;
-  const desiredMaxGapScaled = 0.072;
+  const desiredMaxGapScaled = 0.040;
   let densityPenalty = 0;
   if (avgGapScaled < desiredMinGapScaled) {
     densityPenalty += (desiredMinGapScaled - avgGapScaled) * 9;
   } else if (avgGapScaled > desiredMaxGapScaled) {
-    densityPenalty += (avgGapScaled - desiredMaxGapScaled) * 3.6;
+    densityPenalty += (avgGapScaled - desiredMaxGapScaled) * 10.0;
   }
   if (minGapScaled < 0.010) {
     densityPenalty += (0.010 - minGapScaled) * 12;
   }
-  if (nodeAreaRatio < 0.15) {
-    densityPenalty += (0.15 - nodeAreaRatio) * 48;
+  if (nodeAreaRatio < 0.20) {
+    densityPenalty += (0.20 - nodeAreaRatio) * 88;
   }
 
   return {
@@ -1740,15 +1742,15 @@ function isBetterQuality(candidate: LayoutQuality, best: LayoutQuality): boolean
   }
 
   // Stage 1: object legibility and presence.
-  const objectSizeCmp = compareHigher(candidate.objectSizeScore, best.objectSizeScore, 1e-4);
+  const objectSizeCmp = compareHigher(candidate.objectSizeScore, best.objectSizeScore, 6e-5);
   if (objectSizeCmp !== 0) {
     return objectSizeCmp < 0;
   }
-  const areaRatioCmp = compareHigher(candidate.nodeAreaRatio, best.nodeAreaRatio, 3e-4);
+  const areaRatioCmp = compareHigher(candidate.nodeAreaRatio, best.nodeAreaRatio, 2e-4);
   if (areaRatioCmp !== 0) {
     return areaRatioCmp < 0;
   }
-  const fitCmp = compareHigher(candidate.fit, best.fit, 7e-5);
+  const fitCmp = compareHigher(candidate.fit, best.fit, 5e-5);
   if (fitCmp !== 0) {
     return fitCmp < 0;
   }
@@ -1906,8 +1908,8 @@ function applyNodeRepulsion(ir: DiagramIr, desiredGapPx: number): void {
     return;
   }
 
-  const iterations = 10;
-  const originById = new Map(ir.nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
+  const iterations = 16;
+  const subgraphById = new Map(ir.subgraphs.map((subgraph) => [subgraph.id, subgraph]));
 
   for (let iter = 0; iter < iterations; iter += 1) {
     const forces = new Map<string, { x: number; y: number }>();
@@ -1955,7 +1957,16 @@ function applyNodeRepulsion(ir: DiagramIr, desiredGapPx: number): void {
       }
     }
 
-    const maxStep = clamp(desiredGapPx * (0.28 - iter * 0.014), 1.8, 18);
+    let globalCx = 0;
+    let globalCy = 0;
+    for (const node of ir.nodes) {
+      globalCx += node.x + node.width / 2;
+      globalCy += node.y + node.height / 2;
+    }
+    globalCx /= ir.nodes.length;
+    globalCy /= ir.nodes.length;
+
+    const maxStep = clamp(desiredGapPx * (0.32 - iter * 0.010), 2.0, 22);
     for (const node of ir.nodes) {
       if (node.isJunction) {
         continue;
@@ -1966,10 +1977,19 @@ function applyNodeRepulsion(ir: DiagramIr, desiredGapPx: number): void {
         continue;
       }
 
-      const original = originById.get(node.id);
-      if (original) {
-        force.x += (original.x - node.x) * 0.035;
-        force.y += (original.y - node.y) * 0.035;
+      const cx = node.x + node.width / 2;
+      const cy = node.y + node.height / 2;
+      force.x += (globalCx - cx) * 0.022;
+      force.y += (globalCy - cy) * 0.022;
+
+      if (node.subgraphId) {
+        const sub = subgraphById.get(node.subgraphId);
+        if (sub) {
+          const scx = sub.x + sub.width / 2;
+          const scy = sub.y + sub.height / 2;
+          force.x += (scx - cx) * 0.032;
+          force.y += (scy - cy) * 0.032;
+        }
       }
 
       const mag = Math.hypot(force.x, force.y);
@@ -2011,8 +2031,8 @@ function spreadTopLevelBlocks(ir: DiagramIr, desiredGapPx: number): void {
       const a = blocks[i];
       for (let j = i + 1; j < blocks.length; j += 1) {
         const b = blocks[j];
-        const ra = expandedRect(a, desiredGapPx / 2);
-        const rb = expandedRect(b, desiredGapPx / 2);
+        const ra = expandedRect(a, Math.max(0, desiredGapPx / 4));
+        const rb = expandedRect(b, Math.max(0, desiredGapPx / 4));
         if (!intersectsRect(ra, rb)) {
           continue;
         }
@@ -2081,48 +2101,75 @@ function spreadTopLevelBlocks(ir: DiagramIr, desiredGapPx: number): void {
   rerouteEdgesStraight(ir);
 }
 
+function scaleNodePositionsAroundCenter(ir: DiagramIr, scaleX: number, scaleY: number): void {
+  recomputeBounds(ir);
+  const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
+  const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
+  for (const node of ir.nodes) {
+    node.x = cx + (node.x - cx) * scaleX;
+    node.y = cy + (node.y - cy) * scaleY;
+  }
+  recomputeSubgraphBounds(ir);
+  recomputeBounds(ir);
+}
+
+function compactLayoutByGapTargets(ir: DiagramIr, targetMinGapPx: number, targetAvgGapPx: number): void {
+  const maxIter = 18;
+  for (let iter = 0; iter < maxIter; iter += 1) {
+    const minGap = minNodeGapPx(ir);
+    const avgGap = averageNearestNodeGapPx(ir);
+    if (minGap <= targetMinGapPx * 1.10 && avgGap <= targetAvgGapPx * 1.10) {
+      break;
+    }
+
+    const minRatio = targetMinGapPx / Math.max(1, minGap);
+    const avgRatio = targetAvgGapPx / Math.max(1, avgGap);
+    const factor = clamp(Math.max(minRatio, avgRatio), 0.80, 0.965);
+    if (factor >= 0.999) {
+      break;
+    }
+
+    const before = captureLayoutState(ir);
+    scaleNodePositionsAroundCenter(ir, factor, factor);
+    rerouteEdgesStraight(ir);
+
+    const minAfter = minNodeGapPx(ir);
+    if (minAfter < targetMinGapPx * 0.90) {
+      restoreLayoutState(ir, before);
+      break;
+    }
+  }
+}
+
 function refineLayoutForReadability(ir: DiagramIr): void {
-  const desiredGap = clamp((ir.config.layout.nodesep + ir.config.layout.ranksep) / 3.4, 14, 56);
+  const desiredGap = clamp((ir.config.layout.nodesep + ir.config.layout.ranksep) / 4.4, 8, 24);
   applyNodeRepulsion(ir, desiredGap);
-  spreadTopLevelBlocks(ir, desiredGap * 1.05);
+  const blocks = collectTopLevelBlocks(ir);
+  let hasBlockOverlap = false;
+  for (let i = 0; i < blocks.length; i += 1) {
+    for (let j = i + 1; j < blocks.length; j += 1) {
+      if (rectIntersectionArea(blocks[i], blocks[j]) > 0.1) {
+        hasBlockOverlap = true;
+        break;
+      }
+    }
+    if (hasBlockOverlap) {
+      break;
+    }
+  }
+  if (hasBlockOverlap) {
+    spreadTopLevelBlocks(ir, desiredGap * 0.45);
+  }
+  rerouteEdgesStraight(ir);
+  const compactMinGap = clamp(desiredGap * 1.25, 16, 44);
+  const compactAvgGap = clamp(compactMinGap * 2.2, 38, 96);
+  compactLayoutByGapTargets(ir, compactMinGap, compactAvgGap);
   rerouteEdgesStraight(ir);
 }
 
 function rebalanceAspectBySpreading(ir: DiagramIr, targetAspectRatio: number): void {
-  const target = clampAspect(targetAspectRatio);
-  recomputeBounds(ir);
-  const currentAspect = diagramAspect(ir);
-  if (!Number.isFinite(currentAspect) || currentAspect <= 0) {
-    return;
-  }
-
-  let axis: "x" | "y" | undefined;
-  let factor = 1;
-  if (currentAspect < target * 0.94) {
-    axis = "x";
-    factor = clamp(target / currentAspect, 1, 1.5);
-  } else if (currentAspect > target * 1.06) {
-    axis = "y";
-    factor = clamp(currentAspect / target, 1, 1.5);
-  }
-
-  if (!axis || factor <= 1.01) {
-    return;
-  }
-
-  const cx = (ir.bounds.minX + ir.bounds.maxX) / 2;
-  const cy = (ir.bounds.minY + ir.bounds.maxY) / 2;
-
-  for (const node of ir.nodes) {
-    if (axis === "x") {
-      node.x = cx + (node.x - cx) * factor;
-    } else {
-      node.y = cy + (node.y - cy) * factor;
-    }
-  }
-
-  recomputeSubgraphBounds(ir);
-  rerouteEdgesStraight(ir);
+  void ir;
+  void targetAspectRatio;
 }
 
 function wrapTopLevelBlocks(ir: DiagramIr, targetAspectRatio: number): void {
@@ -2132,7 +2179,7 @@ function wrapTopLevelBlocks(ir: DiagramIr, targetAspectRatio: number): void {
   }
 
   // Gap between top-level blocks (subgraphs / ungrouped section).
-  const gap = clamp((ir.config.layout.nodesep + ir.config.layout.ranksep) / 2, 40, 160);
+  const gap = clamp((ir.config.layout.nodesep + ir.config.layout.ranksep) / 2.6, 10, 72);
 
   rerouteEdgesStraight(ir);
   refineLayoutForReadability(ir);
@@ -2219,8 +2266,8 @@ function optimizeLayoutForSlide(ir: DiagramIr, targetAspectRatio: number): void 
   const directionCandidates: DiagramDirection[] =
     swappedDirection !== baseDirection ? [baseDirection, swappedDirection] : [baseDirection];
 
-  const nodesepCandidates = spacingCandidates(baseNodesep, [42, 56, 72, 96, 128, 168, 220], 22, 320);
-  const ranksepCandidates = spacingCandidates(baseRanksep, [28, 40, 56, 76, 104, 144, 192], 18, 320);
+  const nodesepCandidates = spacingCandidates(baseNodesep, [28, 36, 48, 64, 84, 108, 136], 14, 180);
+  const ranksepCandidates = spacingCandidates(baseRanksep, [22, 30, 42, 56, 74, 96, 126], 12, 180);
 
   let bestState: LayoutState | undefined;
   let bestQuality: LayoutQuality | undefined;

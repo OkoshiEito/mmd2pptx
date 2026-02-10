@@ -34,11 +34,11 @@ function titleBandHeight(title: string): number {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
-    .reduce((sum, line) => sum + Math.max(1, Math.ceil(titleTextUnits(line) / 34)), 0);
+    .reduce((sum, line) => sum + Math.max(1, Math.ceil(titleTextUnits(line) / 26)), 0);
 
   // Reserve generous vertical space above subgraph members so long group descriptions
   // remain visible and do not collide with nodes.
-  return Math.max(72, 16 + wrappedLines * 22);
+  return Math.max(92, 18 + wrappedLines * 24);
 }
 
 export function recomputeSubgraphBounds(ir: DiagramIr): void {

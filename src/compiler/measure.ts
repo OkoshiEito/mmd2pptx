@@ -17,9 +17,9 @@ interface MeasureOptions {
 
 const DEFAULT_MEASURE_CONFIG: MeasureConfig = {
   minWidth: 156,
-  maxWidth: 1200,
+  maxWidth: 1800,
   minHeight: 84,
-  maxHeight: 620,
+  maxHeight: 920,
   paddingX: 34,
   paddingY: 24,
   fontSize: 14,
@@ -188,6 +188,7 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
   const maxWidth = Math.min(DEFAULT_MEASURE_CONFIG.maxWidth, maxWidthForAspect(aspect));
   const heightScale = heightScaleForAspect(aspect);
   const textFitSafety = 1.20;
+  const nodeLinearScale = 1.80; // ~3.2x area baseline
 
   for (const node of ir.nodes) {
     if (node.isJunction) {
@@ -240,8 +241,10 @@ export function measureDiagram(ir: DiagramIr, options: MeasureOptions = {}): voi
         : clamp(desiredHeight, DEFAULT_MEASURE_CONFIG.minHeight, DEFAULT_MEASURE_CONFIG.maxHeight);
 
     node.label = wrappedLines.join("\n");
-    node.width = width;
-    node.height = height;
+    const boostedWidth = clamp(width * nodeLinearScale, DEFAULT_MEASURE_CONFIG.minWidth, DEFAULT_MEASURE_CONFIG.maxWidth);
+    const boostedHeight = clamp(height * nodeLinearScale, DEFAULT_MEASURE_CONFIG.minHeight, DEFAULT_MEASURE_CONFIG.maxHeight);
+    node.width = boostedWidth;
+    node.height = boostedHeight;
 
     applyShapeAdjustment(node);
   }
